@@ -13,9 +13,9 @@ A Streamlit dashboard for analyzing inbound website traffic, journeys, sources, 
 ### Session table
 
 - CSV upload option in the sidebar
-- Date range filter
-- Filters for landing type, session medium, session source, country, region, city, and landing page
-- Text search across page sequence, events, source, and geo fields
+- Compact top filter bar designed to stay short on the page
+- Date range filter and text search on the first row
+- Popover filters for landing type, session medium, session source, country, region, city, and landing page
 - Summary metrics
 - Full filtered session table
 - Download filtered CSV

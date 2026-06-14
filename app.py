@@ -152,23 +152,56 @@ def pct(numerator, denominator):
 def apply_global_filters(df):
     filtered_df = df.copy()
 
-    st.subheader("Filters")
+    st.markdown(
+        """
+        <style>
+            div[data-testid="stHorizontalBlock"] div[data-testid="stVerticalBlock"] {
+                gap: 0.35rem;
+            }
+            div[data-testid="stPopover"] button {
+                width: 100%;
+                min-height: 2.35rem;
+            }
+            .filter-summary {
+                font-size: 0.85rem;
+                color: #666;
+                margin-top: -0.35rem;
+                margin-bottom: 0.25rem;
+            }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
-    if "session_date" in filtered_df.columns and filtered_df["session_date"].notna().any():
-        min_date = filtered_df["session_date"].min()
-        max_date = filtered_df["session_date"].max()
-        selected_range = st.date_input(
-            "Session date range",
-            value=(min_date, max_date),
-            min_value=min_date,
-            max_value=max_date,
+    st.subheader("Filters")
+    st.caption("Compact filter bar. Open any filter button to refine; selected filters stay active.")
+
+    date_col, search_col, count_col = st.columns([1.25, 2.6, 0.8])
+
+    with date_col:
+        if "session_date" in filtered_df.columns and filtered_df["session_date"].notna().any():
+            min_date = filtered_df["session_date"].min()
+            max_date = filtered_df["session_date"].max()
+            selected_range = st.date_input(
+                "Date range",
+                value=(min_date, max_date),
+                min_value=min_date,
+                max_value=max_date,
+                label_visibility="collapsed",
+            )
+            if isinstance(selected_range, tuple) and len(selected_range) == 2:
+                start_date, end_date = selected_range
+                filtered_df = filtered_df[
+                    (filtered_df["session_date"] >= start_date)
+                    & (filtered_df["session_date"] <= end_date)
+                ]
+
+    with search_col:
+        search_text = st.text_input(
+            "Search",
+            placeholder="Search journey, events, source, geo...",
+            label_visibility="collapsed",
         )
-        if isinstance(selected_range, tuple) and len(selected_range) == 2:
-            start_date, end_date = selected_range
-            filtered_df = filtered_df[
-                (filtered_df["session_date"] >= start_date)
-                & (filtered_df["session_date"] <= end_date)
-            ]
 
     filter_columns = [
         "landing_type",
@@ -181,31 +214,46 @@ def apply_global_filters(df):
     ]
     filter_columns = [col for col in filter_columns if col in filtered_df.columns]
 
-    cols_per_row = 3
-    for i in range(0, len(filter_columns), cols_per_row):
-        cols = st.columns(cols_per_row)
-        for col_name, ui_col in zip(filter_columns[i : i + cols_per_row], cols):
-            with ui_col:
-                options = (
-                    filtered_df[col_name]
-                    .dropna()
-                    .astype(str)
-                    .sort_values()
-                    .unique()
-                    .tolist()
-                )
-                selected = st.multiselect(
-                    label=col_name.replace("_", " ").title(),
-                    options=options,
-                    placeholder=f"All {col_name}",
-                )
-                if selected:
-                    filtered_df = filtered_df[filtered_df[col_name].astype(str).isin(selected)]
+    selected_filters = {}
+    compact_cols = st.columns(len(filter_columns) if filter_columns else 1)
+    for col_name, ui_col in zip(filter_columns, compact_cols):
+        label = col_name.replace("_", " ").title()
+        with ui_col:
+            options = (
+                filtered_df[col_name]
+                .dropna()
+                .astype(str)
+                .sort_values()
+                .unique()
+                .tolist()
+            )
+            if hasattr(st, "popover"):
+                with st.popover(label):
+                    selected = st.multiselect(
+                        label,
+                        options=options,
+                        placeholder=f"All {label.lower()}",
+                        key=f"filter_{col_name}",
+                    )
+            else:
+                # Fallback for older Streamlit versions.
+                with st.expander(label, expanded=False):
+                    selected = st.multiselect(
+                        label,
+                        options=options,
+                        placeholder=f"All {label.lower()}",
+                        key=f"filter_{col_name}",
+                    )
+            selected_filters[col_name] = selected
 
-    search_text = st.text_input(
-        "Search across page sequence, events, source, city, region, country",
-        placeholder="Example: pricing, google, electronics, United States",
-    )
+    active_filter_labels = []
+    for col_name, selected in selected_filters.items():
+        if selected:
+            filtered_df = filtered_df[filtered_df[col_name].astype(str).isin(selected)]
+            active_filter_labels.append(
+                f"{col_name.replace('_', ' ').title()}: {len(selected)}"
+            )
+
     if search_text:
         searchable_cols = [
             col
@@ -228,6 +276,18 @@ def apply_global_filters(df):
                 search_text, case=False, na=False
             )
         filtered_df = filtered_df[mask]
+        active_filter_labels.append("Search")
+
+    with count_col:
+        st.metric("Rows", f"{len(filtered_df):,}")
+
+    if active_filter_labels:
+        st.markdown(
+            f'<div class="filter-summary">Active: {" | ".join(active_filter_labels)}</div>',
+            unsafe_allow_html=True,
+        )
+    else:
+        st.markdown('<div class="filter-summary">Active: none</div>', unsafe_allow_html=True)
 
     return filtered_df
 
