@@ -206,9 +206,28 @@ def display_path_label(path, max_chars=58):
     return path[: max_chars - 1] + "…"
 
 
-def build_sankey_transitions(df, max_depth=5, top_pages_per_step=12, min_sessions=1, include_dropoffs=True):
+def step_label(step):
+    if step == 1:
+        return "Landing"
+    if step == 2:
+        return "2nd page"
+    if step == 3:
+        return "3rd page"
+    return f"Page {step}"
+
+
+def build_website_dropoff_sankey(df, max_depth=5, top_pages_per_step=10, min_sessions=1):
+    """Build a website-wide journey Sankey focused on drop-offs.
+
+    Every session contributes one path:
+      Landing page -> next page -> ... -> Drop-off after step N
+
+    Pages are kept by step. This means /pricing as a landing page and /pricing as a
+    second page are separate nodes, which makes the journey direction clear. Long-tail
+    pages are grouped into "Other pages" at each step to keep the chart readable.
+    """
     if "pages" not in df.columns or df.empty:
-        return pd.DataFrame(), pd.DataFrame()
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
     session_col = "session_key" if "session_key" in df.columns else None
     working = df[["pages"] + ([session_col] if session_col else [])].copy()
@@ -216,25 +235,20 @@ def build_sankey_transitions(df, max_depth=5, top_pages_per_step=12, min_session
         working["session_key"] = working.index.astype(str)
         session_col = "session_key"
 
+    clean_sessions = []
     step_page_records = []
-    session_paths = []
-
     for _, row in working.iterrows():
         session_key = row[session_col]
-        pages = row.get("pages", []) or []
-        pages = [normalize_path(p) for p in pages if normalize_path(p)]
+        pages = [normalize_path(p) for p in (row.get("pages", []) or []) if normalize_path(p)]
         if not pages:
             continue
-
-        capped_pages = pages[:max_depth]
-        session_paths.append((session_key, pages, capped_pages))
-        for step_idx, path in enumerate(capped_pages, start=1):
-            step_page_records.append(
-                {"step": step_idx, "page": path, "session_key": session_key}
-            )
+        capped = pages[:max_depth]
+        clean_sessions.append((session_key, pages, capped))
+        for idx, path in enumerate(capped, start=1):
+            step_page_records.append({"step": idx, "page": path, "session_key": session_key})
 
     if not step_page_records:
-        return pd.DataFrame(), pd.DataFrame()
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
     step_pages = pd.DataFrame(step_page_records)
     top_pages = (
@@ -248,58 +262,59 @@ def build_sankey_transitions(df, max_depth=5, top_pages_per_step=12, min_session
     top_lookup = set(zip(top_pages["step"], top_pages["page"]))
 
     transition_records = []
-    for session_key, pages, capped_pages in session_paths:
-        if not capped_pages:
-            continue
+    page_dropoff_records = []
+    step_reached = []
+    step_ended = []
 
-        mapped_pages = []
-        for step_idx, path in enumerate(capped_pages, start=1):
-            if (step_idx, path) in top_lookup:
-                mapped_pages.append(path)
-            else:
-                mapped_pages.append(f"Other pages at step {step_idx}")
+    for session_key, pages, capped in clean_sessions:
+        mapped = []
+        for step_idx, path in enumerate(capped, start=1):
+            mapped.append(path if (step_idx, path) in top_lookup else f"Other pages at {step_label(step_idx)}")
 
-        for idx in range(len(mapped_pages) - 1):
+        for idx in range(len(mapped) - 1):
             source_step = idx + 1
             target_step = idx + 2
             transition_records.append(
                 {
                     "source_step": source_step,
-                    "source_page": mapped_pages[idx],
+                    "source_page": mapped[idx],
                     "target_step": target_step,
-                    "target_page": mapped_pages[idx + 1],
+                    "target_page": mapped[idx + 1],
                     "session_key": session_key,
-                    "transition_type": "Next page",
+                    "transition_type": "Continued",
                 }
             )
 
-        last_observed_step = len(mapped_pages)
-        if include_dropoffs:
-            if len(pages) <= max_depth:
-                transition_records.append(
-                    {
-                        "source_step": last_observed_step,
-                        "source_page": mapped_pages[-1],
-                        "target_step": last_observed_step + 1,
-                        "target_page": f"Drop-off after step {last_observed_step}",
-                        "session_key": session_key,
-                        "transition_type": "Drop-off",
-                    }
-                )
-            else:
-                transition_records.append(
-                    {
-                        "source_step": last_observed_step,
-                        "source_page": mapped_pages[-1],
-                        "target_step": last_observed_step + 1,
-                        "target_page": f"Continues beyond step {last_observed_step}",
-                        "session_key": session_key,
-                        "transition_type": "Continues",
-                    }
-                )
+        last_step = len(mapped)
+        original_length = len(pages)
+        if original_length <= max_depth:
+            target_page = f"Drop-off after {step_label(last_step)}"
+            transition_type = "Drop-off"
+            page_dropoff_records.append(
+                {
+                    "step": last_step,
+                    "page": mapped[-1],
+                    "session_key": session_key,
+                }
+            )
+            step_ended.append({"step": last_step, "session_key": session_key})
+        else:
+            target_page = f"Continues beyond {step_label(last_step)}"
+            transition_type = "Continues beyond chart"
 
-    if not transition_records:
-        return pd.DataFrame(), pd.DataFrame()
+        transition_records.append(
+            {
+                "source_step": last_step,
+                "source_page": mapped[-1],
+                "target_step": last_step + 1,
+                "target_page": target_page,
+                "session_key": session_key,
+                "transition_type": transition_type,
+            }
+        )
+
+        for step_idx in range(1, min(original_length, max_depth) + 1):
+            step_reached.append({"step": step_idx, "session_key": session_key})
 
     transitions = (
         pd.DataFrame(transition_records)
@@ -311,9 +326,10 @@ def build_sankey_transitions(df, max_depth=5, top_pages_per_step=12, min_session
         .reset_index(name="sessions")
     )
     transitions = transitions[transitions["sessions"] >= min_sessions]
-    transitions = transitions.sort_values(
-        ["source_step", "sessions"], ascending=[True, False]
-    ).reset_index(drop=True)
+    transitions = transitions.sort_values(["source_step", "sessions"], ascending=[True, False]).reset_index(drop=True)
+
+    if transitions.empty:
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
     node_records = []
     for _, r in transitions.iterrows():
@@ -321,54 +337,80 @@ def build_sankey_transitions(df, max_depth=5, top_pages_per_step=12, min_session
         node_records.append({"step": r["target_step"], "page": r["target_page"]})
     nodes = pd.DataFrame(node_records).drop_duplicates().sort_values(["step", "page"])
     nodes["node_key"] = nodes.apply(lambda r: f"{int(r['step'])}|{r['page']}", axis=1)
-    nodes["label"] = nodes.apply(
-        lambda r: f"{int(r['step'])}. {display_path_label(r['page'])}"
-        if not str(r["page"]).startswith(("Drop-off", "Continues"))
-        else str(r["page"]),
-        axis=1,
-    )
+
+    def node_label(row):
+        page = str(row["page"])
+        if page.startswith("Drop-off") or page.startswith("Continues"):
+            return page
+        return f"{step_label(int(row['step']))}: {display_path_label(page)}"
+
+    nodes["label"] = nodes.apply(node_label, axis=1)
     nodes["node_id"] = range(len(nodes))
     node_lookup = dict(zip(nodes["node_key"], nodes["node_id"]))
+    label_lookup = dict(zip(nodes["node_key"], nodes["label"]))
 
-    transitions["source_key"] = transitions.apply(
-        lambda r: f"{int(r['source_step'])}|{r['source_page']}", axis=1
-    )
-    transitions["target_key"] = transitions.apply(
-        lambda r: f"{int(r['target_step'])}|{r['target_page']}", axis=1
-    )
+    transitions["source_key"] = transitions.apply(lambda r: f"{int(r['source_step'])}|{r['source_page']}", axis=1)
+    transitions["target_key"] = transitions.apply(lambda r: f"{int(r['target_step'])}|{r['target_page']}", axis=1)
     transitions["source_id"] = transitions["source_key"].map(node_lookup)
     transitions["target_id"] = transitions["target_key"].map(node_lookup)
-    transitions["source_label"] = transitions["source_key"].map(dict(zip(nodes["node_key"], nodes["label"])))
-    transitions["target_label"] = transitions["target_key"].map(dict(zip(nodes["node_key"], nodes["label"])))
+    transitions["source_label"] = transitions["source_key"].map(label_lookup)
+    transitions["target_label"] = transitions["target_key"].map(label_lookup)
 
-    return transitions, nodes
+    reached = pd.DataFrame(step_reached).groupby("step")["session_key"].nunique().reset_index(name="sessions_reached")
+    ended = pd.DataFrame(step_ended).groupby("step")["session_key"].nunique().reset_index(name="dropoff_sessions") if step_ended else pd.DataFrame(columns=["step", "dropoff_sessions"])
+    step_summary = reached.merge(ended, on="step", how="left").fillna({"dropoff_sessions": 0})
+    step_summary["dropoff_sessions"] = step_summary["dropoff_sessions"].astype(int)
+    step_summary["continued_sessions"] = step_summary["sessions_reached"] - step_summary["dropoff_sessions"]
+    step_summary["dropoff_rate"] = step_summary.apply(lambda r: pct(r["dropoff_sessions"], r["sessions_reached"]), axis=1)
+    step_summary["journey_step"] = step_summary["step"].apply(step_label)
+
+    if page_dropoff_records:
+        page_dropoffs = pd.DataFrame(page_dropoff_records).groupby(["step", "page"])["session_key"].nunique().reset_index(name="dropoff_sessions")
+    else:
+        page_dropoffs = pd.DataFrame(columns=["step", "page", "dropoff_sessions"])
+    page_reached = step_pages.copy()
+    page_reached["mapped_page"] = page_reached.apply(
+        lambda r: r["page"] if (r["step"], r["page"]) in top_lookup else f"Other pages at {step_label(int(r['step']))}",
+        axis=1,
+    )
+    page_reached = page_reached.groupby(["step", "mapped_page"])["session_key"].nunique().reset_index(name="sessions_reached")
+    page_dropoffs["mapped_page"] = page_dropoffs["page"]
+    page_dropoffs = page_dropoffs.groupby(["step", "mapped_page"])["dropoff_sessions"].sum().reset_index()
+    page_summary = page_reached.merge(page_dropoffs, on=["step", "mapped_page"], how="left").fillna({"dropoff_sessions": 0})
+    page_summary["dropoff_sessions"] = page_summary["dropoff_sessions"].astype(int)
+    page_summary["dropoff_rate"] = page_summary.apply(lambda r: pct(r["dropoff_sessions"], r["sessions_reached"]), axis=1)
+    page_summary["journey_step"] = page_summary["step"].apply(step_label)
+    page_summary = page_summary.sort_values(["dropoff_sessions", "sessions_reached"], ascending=False)
+
+    return transitions, nodes, step_summary, page_summary
 
 
 def render_journey_sankey_page(filtered_df):
     st.divider()
-    st.subheader("Journey Sankey")
-    st.caption("Visualizes page-to-page movement from `page_sequence`. Drop-off nodes show where sessions end within the selected journey depth.")
+    st.subheader("Website-wide drop-off Sankey")
 
     if "pages" not in filtered_df.columns or filtered_df.empty:
         st.info("No journey data found for the current filters.")
         return
 
-    control_cols = st.columns([1, 1, 1, 1.2])
-    with control_cols[0]:
-        max_depth = st.slider("Journey depth", min_value=2, max_value=8, value=5)
-    with control_cols[1]:
-        top_pages_per_step = st.slider("Top pages / step", min_value=5, max_value=30, value=12)
-    with control_cols[2]:
-        min_sessions = st.number_input("Min sessions / link", min_value=1, max_value=1000, value=1, step=1)
-    with control_cols[3]:
-        include_dropoffs = st.toggle("Show drop-offs", value=True)
+    st.markdown(
+        "This view answers: **from each journey step, how many sessions continue and how many drop off?** "
+        "Each column is a journey step. Every session ends in either a **Drop-off** node or a **Continues beyond chart** node."
+    )
 
-    transitions, nodes = build_sankey_transitions(
+    control_cols = st.columns([1, 1, 1])
+    with control_cols[0]:
+        max_depth = st.slider("Show journey steps", min_value=2, max_value=8, value=5)
+    with control_cols[1]:
+        top_pages_per_step = st.slider("Top pages per step", min_value=5, max_value=25, value=10)
+    with control_cols[2]:
+        min_sessions = st.number_input("Minimum sessions per flow", min_value=1, max_value=1000, value=2, step=1)
+
+    transitions, nodes, step_summary, page_summary = build_website_dropoff_sankey(
         filtered_df,
         max_depth=max_depth,
         top_pages_per_step=top_pages_per_step,
         min_sessions=min_sessions,
-        include_dropoffs=include_dropoffs,
     )
 
     if transitions.empty or nodes.empty:
@@ -378,20 +420,20 @@ def render_journey_sankey_page(filtered_df):
     total_sessions = len(filtered_df)
     single_page_sessions = int((filtered_df.get("page_count", pd.Series(dtype=int)) <= 1).sum()) if "page_count" in filtered_df.columns else 0
     avg_depth = filtered_df["page_count"].mean() if "page_count" in filtered_df.columns else 0
-    observed_links = int(len(transitions))
+    chart_dropoffs = int(transitions.loc[transitions["transition_type"] == "Drop-off", "sessions"].sum())
 
     metric_cols = st.columns(4)
-    metric_cols[0].metric("Sessions in view", f"{total_sessions:,}")
-    metric_cols[1].metric("Avg journey depth", f"{avg_depth:.2f}" if total_sessions else "—")
-    metric_cols[2].metric("Single-page sessions", f"{single_page_sessions:,}", f"{pct(single_page_sessions, total_sessions):.1f}%")
-    metric_cols[3].metric("Displayed links", f"{observed_links:,}")
+    metric_cols[0].metric("Sessions analyzed", f"{total_sessions:,}")
+    metric_cols[1].metric("Drop after landing", f"{single_page_sessions:,}", f"{pct(single_page_sessions, total_sessions):.1f}%")
+    metric_cols[2].metric("Avg journey depth", f"{avg_depth:.2f}" if total_sessions else "—")
+    metric_cols[3].metric("Drop-offs shown", f"{chart_dropoffs:,}")
 
     fig = go.Figure(
         data=[
             go.Sankey(
                 arrangement="snap",
                 node=dict(
-                    pad=18,
+                    pad=20,
                     thickness=16,
                     line=dict(width=0.4),
                     label=nodes["label"].tolist(),
@@ -407,19 +449,50 @@ def render_journey_sankey_page(filtered_df):
         ]
     )
     fig.update_layout(
-        height=720,
+        height=760,
         margin=dict(l=10, r=10, t=20, b=10),
         font=dict(size=11),
     )
     st.plotly_chart(fig, use_container_width=True)
 
-    st.markdown("### Journey transition table")
+    st.markdown("### Drop-off by journey step")
+    st.dataframe(
+        step_summary[["journey_step", "sessions_reached", "dropoff_sessions", "dropoff_rate", "continued_sessions"]],
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "journey_step": "Journey step",
+            "sessions_reached": st.column_config.NumberColumn("Sessions reaching step", format="%d"),
+            "dropoff_sessions": st.column_config.NumberColumn("Drop-off sessions", format="%d"),
+            "dropoff_rate": st.column_config.NumberColumn("Drop-off rate", format="%.1f%%"),
+            "continued_sessions": st.column_config.NumberColumn("Continued sessions", format="%d"),
+        },
+    )
+
+    st.markdown("### Highest drop-off pages")
+    high_dropoff = page_summary[page_summary["dropoff_sessions"] > 0].head(30)
+    if high_dropoff.empty:
+        st.info("No page-level drop-offs found for the current filters.")
+    else:
+        st.dataframe(
+            high_dropoff[["journey_step", "mapped_page", "sessions_reached", "dropoff_sessions", "dropoff_rate"]],
+            use_container_width=True,
+            hide_index=True,
+            height=420,
+            column_config={
+                "journey_step": "Journey step",
+                "mapped_page": "Page",
+                "sessions_reached": st.column_config.NumberColumn("Sessions reaching page", format="%d"),
+                "dropoff_sessions": st.column_config.NumberColumn("Drop-off sessions", format="%d"),
+                "dropoff_rate": st.column_config.NumberColumn("Drop-off rate", format="%.1f%%"),
+            },
+        )
+
+    st.markdown("### Flow table")
     table = transitions[
         [
-            "source_step",
-            "source_page",
-            "target_step",
-            "target_page",
+            "source_label",
+            "target_label",
             "transition_type",
             "sessions",
         ]
@@ -431,18 +504,20 @@ def render_journey_sankey_page(filtered_df):
         hide_index=True,
         height=420,
         column_config={
-            "share_of_filtered_sessions": st.column_config.NumberColumn("Share of filtered sessions", format="%.1f%%"),
+            "source_label": "From",
+            "target_label": "To",
+            "transition_type": "Type",
+            "share_of_filtered_sessions": st.column_config.NumberColumn("Share of sessions", format="%.1f%%"),
         },
     )
 
     csv = table.to_csv(index=False).encode("utf-8")
     st.download_button(
-        label="Download journey transition CSV",
+        label="Download website journey flow CSV",
         data=csv,
-        file_name="journey_sankey_transitions.csv",
+        file_name="website_dropoff_sankey_flows.csv",
         mime="text/csv",
     )
-
 
 def apply_global_filters(df):
     filtered_df = df.copy()

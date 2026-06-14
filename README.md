@@ -25,7 +25,7 @@ Use the compact filters at the top of the dashboard to narrow rows by date, land
 
 - `Session table` shows the filtered raw session-level rows.
 - `Blogs` analyzes sessions that include `/blog/...` pages or the `/blogs` index. It reports unique sessions by blog path, landing/exit behavior, next-page behavior, source mix, and post-blog movement to pricing, schedule demo, and contact us pages.
-- `Journey Sankey` visualizes page-to-page movement from `page_sequence`. It includes controls for journey depth, top pages per step, minimum sessions per link, and whether to show drop-off nodes.
+- `Journey Sankey` is a website-wide drop-off view built from `page_sequence`. It shows landing-page movement across journey steps, explicit drop-off nodes at each step, drop-off by step, highest drop-off pages, and a downloadable flow table.
 
 ## Deploy on Streamlit Community Cloud
 
