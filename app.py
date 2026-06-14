@@ -386,7 +386,6 @@ def build_website_dropoff_sankey(df, max_depth=5, top_pages_per_step=10, min_ses
 
 
 def render_journey_sankey_page(filtered_df):
-    st.divider()
     st.subheader("Website-wide drop-off Sankey")
 
     if "pages" not in filtered_df.columns or filtered_df.empty:
@@ -664,8 +663,6 @@ def apply_global_filters(df):
 
 
 def render_overview_table(filtered_df, df):
-    st.divider()
-
     metric_cols = st.columns(4)
     metric_cols[0].metric("Filtered sessions", f"{len(filtered_df):,}")
     metric_cols[1].metric("Total sessions", f"{len(df):,}")
@@ -730,7 +727,6 @@ def render_overview_table(filtered_df, df):
 
 
 def render_blogs_page(filtered_df):
-    st.divider()
     st.subheader("Blog page analysis")
     st.caption(
         "Analyzes all sessions whose journey includes `/blog/...` pages or the `/blogs` index. "
@@ -751,12 +747,12 @@ def render_blogs_page(filtered_df):
         for intent_key, intent_meta in INTENT_PAGE_DEFINITIONS.items()
     }
 
-    st.metric("Blog sessions", f"{unique_blog_sessions:,}")
+    metric_cols = st.columns(4)
+    metric_cols[0].metric("Blog sessions", f"{unique_blog_sessions:,}")
 
-    intent_metric_cols = st.columns(3)
-    for idx, (intent_key, intent_meta) in enumerate(INTENT_PAGE_DEFINITIONS.items()):
+    for idx, (intent_key, intent_meta) in enumerate(INTENT_PAGE_DEFINITIONS.items(), start=1):
         sessions = intent_after_sessions[intent_key]
-        intent_metric_cols[idx].metric(
+        metric_cols[idx].metric(
             f"Reached {intent_meta['label'].lower()} after blog",
             f"{sessions:,}",
             f"{pct(sessions, unique_blog_sessions):.1f}%",
