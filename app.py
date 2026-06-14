@@ -744,8 +744,6 @@ def render_blogs_page(filtered_df):
 
     unique_blog_sessions = blog_records["session_key"].nunique()
     total_blog_pageviews = len(blog_records)
-    unique_blog_paths = blog_records["blog_path"].nunique()
-    blog_landing_sessions = blog_records.loc[blog_records["is_landing_page"], "session_key"].nunique()
     intent_after_sessions = {
         intent_key: blog_records.loc[
             blog_records[intent_meta["after_blog_column"]], "session_key"
@@ -753,11 +751,7 @@ def render_blogs_page(filtered_df):
         for intent_key, intent_meta in INTENT_PAGE_DEFINITIONS.items()
     }
 
-    metric_cols = st.columns(4)
-    metric_cols[0].metric("Blog sessions", f"{unique_blog_sessions:,}")
-    metric_cols[1].metric("Unique blog paths", f"{unique_blog_paths:,}")
-    metric_cols[2].metric("Blog pageviews", f"{total_blog_pageviews:,}")
-    metric_cols[3].metric("Blog landing sessions", f"{blog_landing_sessions:,}")
+    st.metric("Blog sessions", f"{unique_blog_sessions:,}")
 
     intent_metric_cols = st.columns(3)
     for idx, (intent_key, intent_meta) in enumerate(INTENT_PAGE_DEFINITIONS.items()):
