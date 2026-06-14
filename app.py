@@ -10,7 +10,9 @@ st.set_page_config(
     layout="wide",
 )
 
-DEFAULT_FILE = "bq-results-20260609-135014-1781013034663.csv"
+DEFAULT_TRAFFIC_FILE = "bq-results-20260609-135014-1781013034663.csv"
+DEFAULT_LEADS_FILE = "organic_form_submissions_clean_dashboard_fixed (1).csv"
+PHONE_ROWS_REMOVED = 231
 BLOG_PATH_PREFIXES = ("/blog", "/blogs")
 INTENT_PAGE_DEFINITIONS = {
     "pricing": {
@@ -42,7 +44,7 @@ def load_data(uploaded_file=None):
     if uploaded_file is not None:
         df = pd.read_csv(uploaded_file)
     else:
-        df = pd.read_csv(DEFAULT_FILE)
+        df = pd.read_csv(DEFAULT_TRAFFIC_FILE)
 
     for col in ["session_start_ts", "session_end_ts"]:
         if col in df.columns:
@@ -934,27 +936,292 @@ def render_blogs_page(filtered_df):
     )
 
 
+
+@st.cache_data(show_spinner=False)
+def load_leads_data(uploaded_file=None):
+    if uploaded_file is not None:
+        leads = pd.read_csv(uploaded_file)
+    else:
+        leads = pd.read_csv(DEFAULT_LEADS_FILE)
+
+    if "created_at" in leads.columns:
+        leads["created_at_dt"] = pd.to_datetime(
+            leads["created_at"],
+            errors="coerce",
+            dayfirst=True,
+        )
+        leads["created_date"] = leads["created_at_dt"].dt.date
+        leads["month"] = leads["created_at_dt"].dt.to_period("M").astype(str)
+
+    return leads
+
+
+def apply_leads_filters(leads):
+    filtered = leads.copy()
+    st.subheader("Filters")
+
+    col1, col2, col3, col4 = st.columns([1.25, 1, 1, 1])
+
+    with col1:
+        if "created_date" in filtered.columns and filtered["created_date"].notna().any():
+            min_date = filtered["created_date"].min()
+            max_date = filtered["created_date"].max()
+            selected_range = st.date_input(
+                "Lead date range",
+                value=(min_date, max_date),
+                min_value=min_date,
+                max_value=max_date,
+                label_visibility="collapsed",
+                key="lead_date_range",
+            )
+            if isinstance(selected_range, tuple) and len(selected_range) == 2:
+                start_date, end_date = selected_range
+                filtered = filtered[
+                    (filtered["created_date"] >= start_date)
+                    & (filtered["created_date"] <= end_date)
+                ]
+
+    with col2:
+        if "Intent Type" in filtered.columns:
+            intents = filtered["Intent Type"].dropna().astype(str).sort_values().unique().tolist()
+            selected_intents = st.multiselect(
+                "Intent type",
+                options=intents,
+                placeholder="All intent types",
+                label_visibility="collapsed",
+                key="lead_intent_filter",
+            )
+            if selected_intents:
+                filtered = filtered[filtered["Intent Type"].astype(str).isin(selected_intents)]
+
+    with col3:
+        if "Form Type" in filtered.columns:
+            form_types = filtered["Form Type"].dropna().astype(str).sort_values().unique().tolist()
+            selected_forms = st.multiselect(
+                "Form type",
+                options=form_types,
+                placeholder="All form types",
+                label_visibility="collapsed",
+                key="lead_form_filter",
+            )
+            if selected_forms:
+                filtered = filtered[filtered["Form Type"].astype(str).isin(selected_forms)]
+
+    with col4:
+        if "Page Path" in filtered.columns:
+            pages = filtered["Page Path"].dropna().astype(str).sort_values().unique().tolist()
+            selected_pages = st.multiselect(
+                "Page path",
+                options=pages,
+                placeholder="All page paths",
+                label_visibility="collapsed",
+                key="lead_page_filter",
+            )
+            if selected_pages:
+                filtered = filtered[filtered["Page Path"].astype(str).isin(selected_pages)]
+
+    search = st.text_input(
+        "Search leads",
+        placeholder="Search name, email, company, message, business type...",
+        label_visibility="collapsed",
+        key="lead_search",
+    )
+    if search:
+        searchable = [
+            col for col in [
+                "Name",
+                "Email",
+                "Company Name",
+                "Message",
+                "Business Type",
+                "Monthly Order Volume",
+                "Form Type",
+                "Page Path",
+            ] if col in filtered.columns
+        ]
+        mask = pd.Series(False, index=filtered.index)
+        for col in searchable:
+            mask = mask | filtered[col].fillna("").astype(str).str.contains(search, case=False, na=False)
+        filtered = filtered[mask]
+
+    return filtered
+
+
+def render_inbound_leads_dashboard(leads):
+    st.title("Organic Form Submissions Dashboard")
+    filtered = apply_leads_filters(leads)
+
+    if filtered.empty:
+        st.info("No inbound lead rows match the current filters.")
+        return
+
+    intent_counts = filtered["Intent Type"].fillna("Unknown").value_counts() if "Intent Type" in filtered.columns else pd.Series(dtype=int)
+    total_included = len(filtered)
+    merchant_count = int(intent_counts.get("Prospective Merchant Query", 0))
+    customer_count = int(intent_counts.get("Customer Query", 0))
+    spam_count = int(intent_counts.get("Spam Query", 0))
+
+    metric_cols = st.columns(5)
+    metric_cols[0].metric("Included submissions", f"{total_included:,}")
+    metric_cols[1].metric("Prospective merchant queries", f"{merchant_count:,}")
+    metric_cols[2].metric("Customer queries", f"{customer_count:,}")
+    metric_cols[3].metric("Spam queries", f"{spam_count:,}")
+    metric_cols[4].metric("Phone rows removed", f"{PHONE_ROWS_REMOVED:,}")
+
+    left_col, right_col = st.columns([1, 1.25])
+
+    summary = pd.DataFrame(
+        [
+            {"Metric": "Included submissions", "Value": total_included},
+            {"Metric": "Prospective merchant queries", "Value": merchant_count},
+            {"Metric": "Customer queries", "Value": customer_count},
+            {"Metric": "Spam queries", "Value": spam_count},
+            {"Metric": "Phone rows removed", "Value": PHONE_ROWS_REMOVED},
+        ]
+    )
+    with left_col:
+        st.markdown("### Summary")
+        st.dataframe(summary, use_container_width=True, hide_index=True)
+
+    with right_col:
+        st.markdown("### Intent split")
+        intent_order = ["Prospective Merchant Query", "Customer Query", "Spam Query"]
+        intent_rows = []
+        for intent in intent_order:
+            count = int(intent_counts.get(intent, 0))
+            intent_rows.append({"Intent": intent, "Count": count, "Share": pct(count, total_included)})
+        for intent, count in intent_counts.items():
+            if intent not in intent_order:
+                intent_rows.append({"Intent": intent, "Count": int(count), "Share": pct(count, total_included)})
+        intent_table = pd.DataFrame(intent_rows)
+        st.dataframe(
+            intent_table,
+            use_container_width=True,
+            hide_index=True,
+            column_config={"Share": st.column_config.NumberColumn("Share", format="%.1f%%")},
+        )
+
+    st.markdown("### Monthly trend")
+    if "month" in filtered.columns:
+        monthly = (
+            filtered.pivot_table(
+                index="month",
+                columns="Intent Type",
+                values="created_at",
+                aggfunc="count",
+                fill_value=0,
+            )
+            .reset_index()
+            .rename_axis(None, axis=1)
+        )
+        for col in ["Prospective Merchant Query", "Customer Query", "Spam Query"]:
+            if col not in monthly.columns:
+                monthly[col] = 0
+        monthly = monthly.sort_values("month")
+        monthly["Total Included"] = (
+            monthly["Prospective Merchant Query"] + monthly["Customer Query"] + monthly["Spam Query"]
+        )
+        monthly["Merchant Share"] = monthly.apply(
+            lambda r: pct(r["Prospective Merchant Query"], r["Total Included"]), axis=1
+        )
+        monthly["Merchant MoM Growth"] = monthly["Prospective Merchant Query"].pct_change().fillna(0) * 100
+        monthly = monthly[
+            [
+                "month",
+                "Prospective Merchant Query",
+                "Customer Query",
+                "Spam Query",
+                "Total Included",
+                "Merchant Share",
+                "Merchant MoM Growth",
+            ]
+        ].rename(columns={"month": "Month"})
+        st.dataframe(
+            monthly,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Merchant Share": st.column_config.NumberColumn("Merchant Share", format="%.1f%%"),
+                "Merchant MoM Growth": st.column_config.NumberColumn("Merchant MoM Growth", format="%.1f%%"),
+            },
+        )
+
+    detail_cols = [
+        "created_at",
+        "Intent Type",
+        "Name",
+        "Email",
+        "Company Name",
+        "Form Type",
+        "Page Path",
+        "Business Type",
+        "Monthly Order Volume",
+        "Message",
+    ]
+    detail_cols = [col for col in detail_cols if col in filtered.columns]
+    st.markdown("### Included submission rows")
+    st.dataframe(filtered[detail_cols], use_container_width=True, hide_index=True, height=520)
+
+    csv = filtered[detail_cols].to_csv(index=False).encode("utf-8")
+    st.download_button(
+        label="Download filtered inbound leads CSV",
+        data=csv,
+        file_name="filtered_inbound_leads.csv",
+        mime="text/csv",
+    )
+
 st.title("Inbound Dashboard")
-uploaded_file = st.sidebar.file_uploader("Upload CSV", type=["csv"])
 
 try:
-    df = load_data(uploaded_file)
-except FileNotFoundError:
-    st.error(
-        f"Could not find `{DEFAULT_FILE}`. Upload the CSV using the sidebar, "
-        "or place the CSV in the same folder as this app."
+    selected_dashboard = st.segmented_control(
+        "Dashboard",
+        options=["Website Traffic", "Inbound Leads"],
+        default="Website Traffic",
+        label_visibility="collapsed",
     )
-    st.stop()
+except AttributeError:
+    selected_dashboard = st.radio(
+        "Dashboard",
+        options=["Website Traffic", "Inbound Leads"],
+        horizontal=True,
+        label_visibility="collapsed",
+    )
 
-filtered_df = apply_global_filters(df)
+if selected_dashboard == "Website Traffic":
+    uploaded_file = st.sidebar.file_uploader("Upload website traffic CSV", type=["csv"], key="traffic_upload")
 
-tab_sessions, tab_blogs, tab_journey = st.tabs(["Session table", "Blogs", "Journey Sankey"])
+    try:
+        df = load_data(uploaded_file)
+    except FileNotFoundError:
+        st.error(
+            f"Could not find `{DEFAULT_TRAFFIC_FILE}`. Upload the CSV using the sidebar, "
+            "or place the CSV in the same folder as this app."
+        )
+        st.stop()
 
-with tab_sessions:
-    render_overview_table(filtered_df, df)
+    filtered_df = apply_global_filters(df)
 
-with tab_blogs:
-    render_blogs_page(filtered_df)
+    tab_sessions, tab_blogs, tab_journey = st.tabs(["Session table", "Blogs", "Journey Sankey"])
 
-with tab_journey:
-    render_journey_sankey_page(filtered_df)
+    with tab_sessions:
+        render_overview_table(filtered_df, df)
+
+    with tab_blogs:
+        render_blogs_page(filtered_df)
+
+    with tab_journey:
+        render_journey_sankey_page(filtered_df)
+
+else:
+    uploaded_leads_file = st.sidebar.file_uploader("Upload inbound leads CSV", type=["csv"], key="leads_upload")
+
+    try:
+        leads_df = load_leads_data(uploaded_leads_file)
+    except FileNotFoundError:
+        st.error(
+            f"Could not find `{DEFAULT_LEADS_FILE}`. Upload the CSV using the sidebar, "
+            "or place the CSV in the same folder as this app."
+        )
+        st.stop()
+
+    render_inbound_leads_dashboard(leads_df)
