@@ -1,6 +1,7 @@
 from urllib.parse import urlparse
 
 import pandas as pd
+import plotly.graph_objects as go
 import streamlit as st
 
 st.set_page_config(
@@ -11,6 +12,29 @@ st.set_page_config(
 
 DEFAULT_FILE = "bq-results-20260609-135014-1781013034663.csv"
 BLOG_PATH_PREFIXES = ("/blog", "/blogs")
+INTENT_PAGE_DEFINITIONS = {
+    "pricing": {
+        "label": "Pricing",
+        "column": "reached_pricing",
+        "after_blog_column": "reached_pricing_after_blog",
+        "sessions_column": "pricing_after_blog_sessions",
+        "rate_column": "pricing_after_rate",
+    },
+    "scheduledemo": {
+        "label": "Schedule demo",
+        "column": "reached_scheduledemo",
+        "after_blog_column": "reached_scheduledemo_after_blog",
+        "sessions_column": "scheduledemo_after_blog_sessions",
+        "rate_column": "scheduledemo_after_rate",
+    },
+    "contactus": {
+        "label": "Contact us",
+        "column": "reached_contactus",
+        "after_blog_column": "reached_contactus_after_blog",
+        "sessions_column": "contactus_after_blog_sessions",
+        "rate_column": "contactus_after_rate",
+    },
+}
 
 
 @st.cache_data(show_spinner=False)
@@ -38,7 +62,10 @@ def load_data(uploaded_file=None):
         df["landing_page"] = df["pages"].apply(lambda pages: pages[0] if pages else pd.NA)
         df["exit_page"] = df["pages"].apply(lambda pages: pages[-1] if pages else pd.NA)
         df["page_count"] = df["pages"].apply(len)
-        df["reached_pricing"] = df["pages"].apply(lambda pages: any("/pricing" in p for p in pages))
+        for intent_key, intent_meta in INTENT_PAGE_DEFINITIONS.items():
+            df[intent_meta["column"]] = df["pages"].apply(
+                lambda pages, key=intent_key: any(is_intent_page(p, key) for p in pages)
+            )
         df["has_blog_visit"] = df["pages"].apply(lambda pages: any(is_blog_path(p) for p in pages))
         df["blog_landing_page"] = df["landing_page"].apply(
             lambda p: p if isinstance(p, str) and is_blog_path(p) else pd.NA
@@ -82,6 +109,27 @@ def is_blog_path(path):
     return normalized == "/blogs" or normalized.startswith("/blog/")
 
 
+def compact_path_token(path):
+    return "".join(ch for ch in normalize_path(path).lower() if ch.isalnum())
+
+
+def is_intent_page(path, intent_key):
+    normalized = normalize_path(path).lower()
+    compact = compact_path_token(path)
+
+    if intent_key == "pricing":
+        return "/pricing" in normalized or compact == "pricing"
+    if intent_key == "scheduledemo":
+        return "scheduledemo" in compact or "bookdemo" in compact or "requestdemo" in compact
+    if intent_key == "contactus":
+        return "contactus" in compact or compact == "contact" or compact.endswith("contact")
+    return False
+
+
+def reached_intent_after_page(pages, start_idx, intent_key):
+    return any(is_intent_page(path, intent_key) for path in pages[start_idx + 1 :])
+
+
 def first_value(series):
     series = series.dropna()
     return series.iloc[0] if len(series) else pd.NA
@@ -108,9 +156,11 @@ def blog_page_records(df):
             path = pages[idx]
             next_page = pages[idx + 1] if idx + 1 < len(pages) else pd.NA
             previous_page = pages[idx - 1] if idx > 0 else pd.NA
-            reached_pricing_after = any("/pricing" in p for p in pages[idx + 1 :])
-            records.append(
-                {
+            reached_after_blog = {
+                intent_meta["after_blog_column"]: reached_intent_after_page(pages, idx, intent_key)
+                for intent_key, intent_meta in INTENT_PAGE_DEFINITIONS.items()
+            }
+            record = {
                     "session_key": row.get("session_key"),
                     "session_date": row.get("session_date"),
                     "session_start_ts": row.get("session_start_ts"),
@@ -122,7 +172,6 @@ def blog_page_records(df):
                     "is_exit_page": idx == len(pages) - 1,
                     "next_page": next_page,
                     "previous_page": previous_page,
-                    "reached_pricing_after_blog": reached_pricing_after,
                     "page_count": row.get("page_count"),
                     "session_source": row.get("session_source"),
                     "session_medium": row.get("session_medium"),
@@ -131,7 +180,8 @@ def blog_page_records(df):
                     "geo_region": row.get("geo_region"),
                     "geo_city": row.get("geo_city"),
                 }
-            )
+            record.update(reached_after_blog)
+            records.append(record)
     return pd.DataFrame(records)
 
 
@@ -147,6 +197,251 @@ def pct(numerator, denominator):
     if denominator in (0, None) or pd.isna(denominator):
         return 0.0
     return 100 * numerator / denominator
+
+
+def display_path_label(path, max_chars=58):
+    path = normalize_path(path)
+    if len(path) <= max_chars:
+        return path
+    return path[: max_chars - 1] + "…"
+
+
+def build_sankey_transitions(df, max_depth=5, top_pages_per_step=12, min_sessions=1, include_dropoffs=True):
+    if "pages" not in df.columns or df.empty:
+        return pd.DataFrame(), pd.DataFrame()
+
+    session_col = "session_key" if "session_key" in df.columns else None
+    working = df[["pages"] + ([session_col] if session_col else [])].copy()
+    if session_col is None:
+        working["session_key"] = working.index.astype(str)
+        session_col = "session_key"
+
+    step_page_records = []
+    session_paths = []
+
+    for _, row in working.iterrows():
+        session_key = row[session_col]
+        pages = row.get("pages", []) or []
+        pages = [normalize_path(p) for p in pages if normalize_path(p)]
+        if not pages:
+            continue
+
+        capped_pages = pages[:max_depth]
+        session_paths.append((session_key, pages, capped_pages))
+        for step_idx, path in enumerate(capped_pages, start=1):
+            step_page_records.append(
+                {"step": step_idx, "page": path, "session_key": session_key}
+            )
+
+    if not step_page_records:
+        return pd.DataFrame(), pd.DataFrame()
+
+    step_pages = pd.DataFrame(step_page_records)
+    top_pages = (
+        step_pages.groupby(["step", "page"])["session_key"]
+        .nunique()
+        .reset_index(name="sessions")
+        .sort_values(["step", "sessions"], ascending=[True, False])
+        .groupby("step")
+        .head(top_pages_per_step)
+    )
+    top_lookup = set(zip(top_pages["step"], top_pages["page"]))
+
+    transition_records = []
+    for session_key, pages, capped_pages in session_paths:
+        if not capped_pages:
+            continue
+
+        mapped_pages = []
+        for step_idx, path in enumerate(capped_pages, start=1):
+            if (step_idx, path) in top_lookup:
+                mapped_pages.append(path)
+            else:
+                mapped_pages.append(f"Other pages at step {step_idx}")
+
+        for idx in range(len(mapped_pages) - 1):
+            source_step = idx + 1
+            target_step = idx + 2
+            transition_records.append(
+                {
+                    "source_step": source_step,
+                    "source_page": mapped_pages[idx],
+                    "target_step": target_step,
+                    "target_page": mapped_pages[idx + 1],
+                    "session_key": session_key,
+                    "transition_type": "Next page",
+                }
+            )
+
+        last_observed_step = len(mapped_pages)
+        if include_dropoffs:
+            if len(pages) <= max_depth:
+                transition_records.append(
+                    {
+                        "source_step": last_observed_step,
+                        "source_page": mapped_pages[-1],
+                        "target_step": last_observed_step + 1,
+                        "target_page": f"Drop-off after step {last_observed_step}",
+                        "session_key": session_key,
+                        "transition_type": "Drop-off",
+                    }
+                )
+            else:
+                transition_records.append(
+                    {
+                        "source_step": last_observed_step,
+                        "source_page": mapped_pages[-1],
+                        "target_step": last_observed_step + 1,
+                        "target_page": f"Continues beyond step {last_observed_step}",
+                        "session_key": session_key,
+                        "transition_type": "Continues",
+                    }
+                )
+
+    if not transition_records:
+        return pd.DataFrame(), pd.DataFrame()
+
+    transitions = (
+        pd.DataFrame(transition_records)
+        .groupby(
+            ["source_step", "source_page", "target_step", "target_page", "transition_type"],
+            dropna=False,
+        )["session_key"]
+        .nunique()
+        .reset_index(name="sessions")
+    )
+    transitions = transitions[transitions["sessions"] >= min_sessions]
+    transitions = transitions.sort_values(
+        ["source_step", "sessions"], ascending=[True, False]
+    ).reset_index(drop=True)
+
+    node_records = []
+    for _, r in transitions.iterrows():
+        node_records.append({"step": r["source_step"], "page": r["source_page"]})
+        node_records.append({"step": r["target_step"], "page": r["target_page"]})
+    nodes = pd.DataFrame(node_records).drop_duplicates().sort_values(["step", "page"])
+    nodes["node_key"] = nodes.apply(lambda r: f"{int(r['step'])}|{r['page']}", axis=1)
+    nodes["label"] = nodes.apply(
+        lambda r: f"{int(r['step'])}. {display_path_label(r['page'])}"
+        if not str(r["page"]).startswith(("Drop-off", "Continues"))
+        else str(r["page"]),
+        axis=1,
+    )
+    nodes["node_id"] = range(len(nodes))
+    node_lookup = dict(zip(nodes["node_key"], nodes["node_id"]))
+
+    transitions["source_key"] = transitions.apply(
+        lambda r: f"{int(r['source_step'])}|{r['source_page']}", axis=1
+    )
+    transitions["target_key"] = transitions.apply(
+        lambda r: f"{int(r['target_step'])}|{r['target_page']}", axis=1
+    )
+    transitions["source_id"] = transitions["source_key"].map(node_lookup)
+    transitions["target_id"] = transitions["target_key"].map(node_lookup)
+    transitions["source_label"] = transitions["source_key"].map(dict(zip(nodes["node_key"], nodes["label"])))
+    transitions["target_label"] = transitions["target_key"].map(dict(zip(nodes["node_key"], nodes["label"])))
+
+    return transitions, nodes
+
+
+def render_journey_sankey_page(filtered_df):
+    st.divider()
+    st.subheader("Journey Sankey")
+    st.caption("Visualizes page-to-page movement from `page_sequence`. Drop-off nodes show where sessions end within the selected journey depth.")
+
+    if "pages" not in filtered_df.columns or filtered_df.empty:
+        st.info("No journey data found for the current filters.")
+        return
+
+    control_cols = st.columns([1, 1, 1, 1.2])
+    with control_cols[0]:
+        max_depth = st.slider("Journey depth", min_value=2, max_value=8, value=5)
+    with control_cols[1]:
+        top_pages_per_step = st.slider("Top pages / step", min_value=5, max_value=30, value=12)
+    with control_cols[2]:
+        min_sessions = st.number_input("Min sessions / link", min_value=1, max_value=1000, value=1, step=1)
+    with control_cols[3]:
+        include_dropoffs = st.toggle("Show drop-offs", value=True)
+
+    transitions, nodes = build_sankey_transitions(
+        filtered_df,
+        max_depth=max_depth,
+        top_pages_per_step=top_pages_per_step,
+        min_sessions=min_sessions,
+        include_dropoffs=include_dropoffs,
+    )
+
+    if transitions.empty or nodes.empty:
+        st.info("No Sankey transitions match the current filters and thresholds.")
+        return
+
+    total_sessions = len(filtered_df)
+    single_page_sessions = int((filtered_df.get("page_count", pd.Series(dtype=int)) <= 1).sum()) if "page_count" in filtered_df.columns else 0
+    avg_depth = filtered_df["page_count"].mean() if "page_count" in filtered_df.columns else 0
+    observed_links = int(len(transitions))
+
+    metric_cols = st.columns(4)
+    metric_cols[0].metric("Sessions in view", f"{total_sessions:,}")
+    metric_cols[1].metric("Avg journey depth", f"{avg_depth:.2f}" if total_sessions else "—")
+    metric_cols[2].metric("Single-page sessions", f"{single_page_sessions:,}", f"{pct(single_page_sessions, total_sessions):.1f}%")
+    metric_cols[3].metric("Displayed links", f"{observed_links:,}")
+
+    fig = go.Figure(
+        data=[
+            go.Sankey(
+                arrangement="snap",
+                node=dict(
+                    pad=18,
+                    thickness=16,
+                    line=dict(width=0.4),
+                    label=nodes["label"].tolist(),
+                ),
+                link=dict(
+                    source=transitions["source_id"].astype(int).tolist(),
+                    target=transitions["target_id"].astype(int).tolist(),
+                    value=transitions["sessions"].astype(int).tolist(),
+                    customdata=transitions["transition_type"].tolist(),
+                    hovertemplate="%{source.label} → %{target.label}<br>Sessions: %{value}<br>%{customdata}<extra></extra>",
+                ),
+            )
+        ]
+    )
+    fig.update_layout(
+        height=720,
+        margin=dict(l=10, r=10, t=20, b=10),
+        font=dict(size=11),
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+    st.markdown("### Journey transition table")
+    table = transitions[
+        [
+            "source_step",
+            "source_page",
+            "target_step",
+            "target_page",
+            "transition_type",
+            "sessions",
+        ]
+    ].copy()
+    table["share_of_filtered_sessions"] = table["sessions"].apply(lambda x: pct(x, total_sessions))
+    st.dataframe(
+        table,
+        use_container_width=True,
+        hide_index=True,
+        height=420,
+        column_config={
+            "share_of_filtered_sessions": st.column_config.NumberColumn("Share of filtered sessions", format="%.1f%%"),
+        },
+    )
+
+    csv = table.to_csv(index=False).encode("utf-8")
+    st.download_button(
+        label="Download journey transition CSV",
+        data=csv,
+        file_name="journey_sankey_transitions.csv",
+        mime="text/csv",
+    )
 
 
 def apply_global_filters(df):
@@ -174,9 +469,8 @@ def apply_global_filters(df):
     )
 
     st.subheader("Filters")
-    st.caption("Compact filter bar. Open any filter button to refine; selected filters stay active.")
 
-    date_col, search_col, count_col = st.columns([1.25, 2.6, 0.8])
+    date_col, search_col = st.columns([1.25, 2.6])
 
     with date_col:
         if "session_date" in filtered_df.columns and filtered_df["session_date"].notna().any():
@@ -229,18 +523,22 @@ def apply_global_filters(df):
             )
             if hasattr(st, "popover"):
                 with st.popover(label):
+                    default_options = [country for country in ["United States", "Canada"] if col_name == "geo_country" and country in options]
                     selected = st.multiselect(
                         label,
                         options=options,
+                        default=default_options,
                         placeholder=f"All {label.lower()}",
                         key=f"filter_{col_name}",
                     )
             else:
                 # Fallback for older Streamlit versions.
                 with st.expander(label, expanded=False):
+                    default_options = [country for country in ["United States", "Canada"] if col_name == "geo_country" and country in options]
                     selected = st.multiselect(
                         label,
                         options=options,
+                        default=default_options,
                         placeholder=f"All {label.lower()}",
                         key=f"filter_{col_name}",
                     )
@@ -278,8 +576,6 @@ def apply_global_filters(df):
         filtered_df = filtered_df[mask]
         active_filter_labels.append("Search")
 
-    with count_col:
-        st.metric("Rows", f"{len(filtered_df):,}")
 
     if active_filter_labels:
         st.markdown(
@@ -328,6 +624,8 @@ def render_overview_table(filtered_df, df):
         "exit_page",
         "page_count",
         "reached_pricing",
+        "reached_scheduledemo",
+        "reached_contactus",
         "has_blog_visit",
         "path_sequence",
         "page_sequence",
@@ -373,20 +671,27 @@ def render_blogs_page(filtered_df):
     total_blog_pageviews = len(blog_records)
     unique_blog_paths = blog_records["blog_path"].nunique()
     blog_landing_sessions = blog_records.loc[blog_records["is_landing_page"], "session_key"].nunique()
-    pricing_after_sessions = blog_records.loc[
-        blog_records["reached_pricing_after_blog"], "session_key"
-    ].nunique()
+    intent_after_sessions = {
+        intent_key: blog_records.loc[
+            blog_records[intent_meta["after_blog_column"]], "session_key"
+        ].nunique()
+        for intent_key, intent_meta in INTENT_PAGE_DEFINITIONS.items()
+    }
 
-    metric_cols = st.columns(5)
+    metric_cols = st.columns(4)
     metric_cols[0].metric("Blog sessions", f"{unique_blog_sessions:,}")
     metric_cols[1].metric("Unique blog paths", f"{unique_blog_paths:,}")
     metric_cols[2].metric("Blog pageviews", f"{total_blog_pageviews:,}")
     metric_cols[3].metric("Blog landing sessions", f"{blog_landing_sessions:,}")
-    metric_cols[4].metric(
-        "Reached pricing after blog",
-        f"{pricing_after_sessions:,}",
-        f"{pct(pricing_after_sessions, unique_blog_sessions):.1f}%",
-    )
+
+    intent_metric_cols = st.columns(3)
+    for idx, (intent_key, intent_meta) in enumerate(INTENT_PAGE_DEFINITIONS.items()):
+        sessions = intent_after_sessions[intent_key]
+        intent_metric_cols[idx].metric(
+            f"Reached {intent_meta['label'].lower()} after blog",
+            f"{sessions:,}",
+            f"{pct(sessions, unique_blog_sessions):.1f}%",
+        )
 
     by_blog = (
         blog_records.groupby(["blog_path", "blog_title_guess"], dropna=False)
@@ -397,6 +702,14 @@ def render_blogs_page(filtered_df):
             exit_sessions=("is_exit_page", "sum"),
             pricing_after_blog_sessions=(
                 "reached_pricing_after_blog",
+                lambda s: blog_records.loc[s.index[s], "session_key"].nunique(),
+            ),
+            scheduledemo_after_blog_sessions=(
+                "reached_scheduledemo_after_blog",
+                lambda s: blog_records.loc[s.index[s], "session_key"].nunique(),
+            ),
+            contactus_after_blog_sessions=(
+                "reached_contactus_after_blog",
                 lambda s: blog_records.loc[s.index[s], "session_key"].nunique(),
             ),
             avg_position_in_journey=("position_in_journey", "mean"),
@@ -419,12 +732,14 @@ def render_blogs_page(filtered_df):
     by_blog["pricing_after_rate"] = by_blog.apply(
         lambda r: pct(r["pricing_after_blog_sessions"], r["unique_sessions"]), axis=1
     )
+    by_blog["scheduledemo_after_rate"] = by_blog.apply(
+        lambda r: pct(r["scheduledemo_after_blog_sessions"], r["unique_sessions"]), axis=1
+    )
+    by_blog["contactus_after_rate"] = by_blog.apply(
+        lambda r: pct(r["contactus_after_blog_sessions"], r["unique_sessions"]), axis=1
+    )
 
     by_blog = by_blog.sort_values(["unique_sessions", "blog_pageviews"], ascending=False)
-
-    st.markdown("### Top blog paths by unique sessions")
-    chart_data = by_blog.head(15).set_index("blog_path")[["unique_sessions"]]
-    st.bar_chart(chart_data)
 
     st.markdown("### Blog path performance table")
     display_cols = [
@@ -438,6 +753,10 @@ def render_blogs_page(filtered_df):
         "exit_rate",
         "pricing_after_blog_sessions",
         "pricing_after_rate",
+        "scheduledemo_after_blog_sessions",
+        "scheduledemo_after_rate",
+        "contactus_after_blog_sessions",
+        "contactus_after_rate",
         "avg_position_in_journey",
         "avg_pages_per_session",
         "avg_duration_sec",
@@ -455,6 +774,8 @@ def render_blogs_page(filtered_df):
             "landing_rate": st.column_config.NumberColumn("Landing rate", format="%.1f%%"),
             "exit_rate": st.column_config.NumberColumn("Exit rate", format="%.1f%%"),
             "pricing_after_rate": st.column_config.NumberColumn("Pricing after rate", format="%.1f%%"),
+            "scheduledemo_after_rate": st.column_config.NumberColumn("Schedule demo after rate", format="%.1f%%"),
+            "contactus_after_rate": st.column_config.NumberColumn("Contact us after rate", format="%.1f%%"),
             "avg_position_in_journey": st.column_config.NumberColumn("Avg journey position", format="%.2f"),
             "avg_pages_per_session": st.column_config.NumberColumn("Avg pages/session", format="%.2f"),
             "avg_duration_sec": st.column_config.NumberColumn("Avg duration sec", format="%.0f"),
@@ -495,7 +816,15 @@ def render_blogs_page(filtered_df):
     opportunity.loc[
         (opportunity["unique_sessions"] >= 3) & (opportunity["pricing_after_rate"] >= 20),
         "opportunity_note",
-    ] = "This blog appears to send readers toward pricing. Consider using it as a commercial SEO asset."
+    ] = "This blog sends readers toward pricing. Consider using it as a commercial SEO asset."
+    opportunity.loc[
+        (opportunity["unique_sessions"] >= 3) & (opportunity["scheduledemo_after_rate"] >= 20),
+        "opportunity_note",
+    ] = "This blog sends readers toward schedule demo. Strengthen demo-oriented CTAs and internal links."
+    opportunity.loc[
+        (opportunity["unique_sessions"] >= 3) & (opportunity["contactus_after_rate"] >= 20),
+        "opportunity_note",
+    ] = "This blog sends readers toward contact us. Consider adding contact-oriented CTAs or sales-assist links."
     opportunity.loc[
         (opportunity["landing_sessions"] >= 3) & (opportunity["landing_rate"] >= 60),
         "opportunity_note",
@@ -513,6 +842,8 @@ def render_blogs_page(filtered_df):
                     "landing_rate",
                     "exit_rate",
                     "pricing_after_rate",
+                    "scheduledemo_after_rate",
+                    "contactus_after_rate",
                     "top_source",
                     "top_next_page",
                     "opportunity_note",
@@ -524,6 +855,8 @@ def render_blogs_page(filtered_df):
                 "landing_rate": st.column_config.NumberColumn("Landing rate", format="%.1f%%"),
                 "exit_rate": st.column_config.NumberColumn("Exit rate", format="%.1f%%"),
                 "pricing_after_rate": st.column_config.NumberColumn("Pricing after rate", format="%.1f%%"),
+                "scheduledemo_after_rate": st.column_config.NumberColumn("Schedule demo after rate", format="%.1f%%"),
+                "contactus_after_rate": st.column_config.NumberColumn("Contact us after rate", format="%.1f%%"),
             },
         )
 
@@ -537,8 +870,6 @@ def render_blogs_page(filtered_df):
 
 
 st.title("Inbound Dashboard")
-st.caption("Website traffic, journeys, sources, and blog performance analysis.")
-
 uploaded_file = st.sidebar.file_uploader("Upload CSV", type=["csv"])
 
 try:
@@ -552,10 +883,13 @@ except FileNotFoundError:
 
 filtered_df = apply_global_filters(df)
 
-tab_sessions, tab_blogs = st.tabs(["Session table", "Blogs"])
+tab_sessions, tab_blogs, tab_journey = st.tabs(["Session table", "Blogs", "Journey Sankey"])
 
 with tab_sessions:
     render_overview_table(filtered_df, df)
 
 with tab_blogs:
     render_blogs_page(filtered_df)
+
+with tab_journey:
+    render_journey_sankey_page(filtered_df)
