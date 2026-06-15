@@ -1183,14 +1183,11 @@ selected_dashboard = st.sidebar.radio(
 st.sidebar.divider()
 
 if selected_dashboard == "Website Traffic":
-    uploaded_file = st.sidebar.file_uploader("Upload website traffic CSV", type=["csv"], key="traffic_upload")
-
     try:
-        df = load_data(uploaded_file)
+        df = load_data()
     except FileNotFoundError:
         st.error(
-            f"Could not find `{DEFAULT_TRAFFIC_FILE}`. Upload the CSV using the sidebar, "
-            "or place the CSV in the same folder as this app."
+            f"Could not find `{DEFAULT_TRAFFIC_FILE}`. Place the CSV in the same folder as this app."
         )
         st.stop()
 
@@ -1208,14 +1205,11 @@ if selected_dashboard == "Website Traffic":
         render_journey_sankey_page(filtered_df)
 
 else:
-    uploaded_leads_file = st.sidebar.file_uploader("Upload inbound leads CSV", type=["csv"], key="leads_upload")
-
     try:
-        leads_df = load_leads_data(uploaded_leads_file)
+        leads_df = load_leads_data()
     except FileNotFoundError:
         st.error(
-            f"Could not find `{DEFAULT_LEADS_FILE}`. Upload the CSV using the sidebar, "
-            "or place the CSV in the same folder as this app."
+            f"Could not find `{DEFAULT_LEADS_FILE}`. Place the CSV in the same folder as this app."
         )
         st.stop()
 

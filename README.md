@@ -29,7 +29,7 @@ The top navigation has two dashboard options:
 
 ## Website Traffic
 
-The app loads the bundled website traffic CSV by default when present in the same folder. You can also upload a fresh website traffic CSV from the sidebar.
+The app loads the bundled website traffic CSV from the same folder as the app.
 
 Use the compact filters at the top of the dashboard to narrow rows by date, landing type, source, medium, country, region, city, landing page, and text search across journey/source fields. United States and Canada are selected by default in the country filter when available.
 
@@ -41,7 +41,7 @@ Website traffic tabs:
 
 ## Inbound Leads
 
-The `Inbound Leads` dashboard loads the bundled organic form submissions CSV by default. You can also upload a fresh inbound leads CSV from the sidebar.
+The `Inbound Leads` dashboard loads the bundled organic form submissions CSV from the same folder as the app.
 
 It includes:
 
