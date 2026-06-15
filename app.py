@@ -1020,30 +1020,6 @@ def apply_leads_filters(leads):
             if selected_pages:
                 filtered = filtered[filtered["Page Path"].astype(str).isin(selected_pages)]
 
-    search = st.text_input(
-        "Search leads",
-        placeholder="Search name, email, company, message, business type...",
-        label_visibility="collapsed",
-        key="lead_search",
-    )
-    if search:
-        searchable = [
-            col for col in [
-                "Name",
-                "Email",
-                "Company Name",
-                "Message",
-                "Business Type",
-                "Monthly Order Volume",
-                "Form Type",
-                "Page Path",
-            ] if col in filtered.columns
-        ]
-        mask = pd.Series(False, index=filtered.index)
-        for col in searchable:
-            mask = mask | filtered[col].fillna("").astype(str).str.contains(search, case=False, na=False)
-        filtered = filtered[mask]
-
     return filtered
 
 
@@ -1136,6 +1112,32 @@ def render_inbound_leads_dashboard(leads):
                 "Merchant MoM Growth",
             ]
         ].rename(columns={"month": "Month"})
+
+        merchant_fig = go.Figure()
+        merchant_fig.add_trace(
+            go.Scatter(
+                x=monthly["Month"].astype(str),
+                y=monthly["Prospective Merchant Query"],
+                mode="lines+markers",
+                name="Prospective merchant queries",
+                customdata=monthly[["Merchant MoM Growth", "Merchant Share"]],
+                hovertemplate=(
+                    "Month: %{x}<br>"
+                    "Merchant queries: %{y}<br>"
+                    "MoM growth: %{customdata[0]:.1f}%<br>"
+                    "Merchant share: %{customdata[1]:.1f}%<extra></extra>"
+                ),
+            )
+        )
+        merchant_fig.update_layout(
+            title="Prospective merchant query MoM trend",
+            xaxis_title="Month",
+            yaxis_title="Prospective merchant queries",
+            height=360,
+            margin=dict(l=10, r=10, t=60, b=10),
+        )
+        st.plotly_chart(merchant_fig, use_container_width=True)
+
         st.dataframe(
             monthly,
             use_container_width=True,
@@ -1172,20 +1174,13 @@ def render_inbound_leads_dashboard(leads):
 
 st.title("Inbound Dashboard")
 
-try:
-    selected_dashboard = st.segmented_control(
-        "Dashboard",
-        options=["Website Traffic", "Inbound Leads"],
-        default="Website Traffic",
-        label_visibility="collapsed",
-    )
-except AttributeError:
-    selected_dashboard = st.radio(
-        "Dashboard",
-        options=["Website Traffic", "Inbound Leads"],
-        horizontal=True,
-        label_visibility="collapsed",
-    )
+st.sidebar.markdown("### Navigation")
+selected_dashboard = st.sidebar.radio(
+    "Dashboard",
+    options=["Inbound Leads", "Website Traffic"],
+    index=0,
+)
+st.sidebar.divider()
 
 if selected_dashboard == "Website Traffic":
     uploaded_file = st.sidebar.file_uploader("Upload website traffic CSV", type=["csv"], key="traffic_upload")

@@ -9,6 +9,10 @@ A Streamlit dashboard for analyzing inbound website traffic, blog journeys, webs
 - `organic_form_submissions_clean_dashboard_fixed (1).csv` - default inbound leads dataset
 - `requirements.txt` - Python dependencies
 
+## Navigation
+
+The left sidebar opens with **Inbound Leads** selected by default. Use the sidebar radio buttons to switch between **Inbound Leads** and **Website Traffic**.
+
 ## Run locally
 
 ```bash
@@ -48,8 +52,11 @@ It includes:
 - Phone rows removed
 - Intent split with counts and shares
 - Monthly trend by intent type
+- Prospective merchant query month-over-month line chart
 - Merchant share and merchant month-over-month growth
 - Filtered submission rows with CSV download
+
+The Inbound Leads page filters include date range, intent type, form type, and page path.
 
 ## Deploy on Streamlit Community Cloud
 
