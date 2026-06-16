@@ -9,10 +9,6 @@ A Streamlit dashboard for analyzing inbound website traffic, blog journeys, webs
 - `organic_form_submissions_clean_dashboard_fixed (1).csv` - default inbound leads dataset
 - `requirements.txt` - Python dependencies
 
-## Navigation
-
-The left sidebar opens with **Inbound Leads** selected by default. Use the sidebar radio buttons to switch between **Inbound Leads** and **Website Traffic**.
-
 ## Run locally
 
 ```bash
@@ -22,21 +18,18 @@ streamlit run app.py
 
 ## Navigation
 
-The top navigation has two dashboard options:
-
-- `Website Traffic` opens the existing traffic dashboard.
-- `Inbound Leads` opens the organic form submissions dashboard.
+The left sidebar opens with **Inbound Leads** selected by default. Use the sidebar radio buttons to switch between **Inbound Leads** and **Website Traffic**.
 
 ## Website Traffic
 
-The app loads the bundled website traffic CSV from the same folder as the app.
+The app loads the bundled website traffic CSV from the same folder as the app. The current bundled traffic source contains 12,489 sessions through June 15, 2026.
 
 Use the compact filters at the top of the dashboard to narrow rows by date, landing type, source, medium, country, region, city, landing page, and text search across journey/source fields. United States and Canada are selected by default in the country filter when available.
 
 Website traffic tabs:
 
 - `Session table` shows the filtered raw session-level rows.
-- `Blogs` analyzes sessions that include `/blog/...` pages or the `/blogs` index. It reports unique sessions by blog path, landing/exit behavior, next-page behavior, source mix, and post-blog movement to pricing, schedule demo, and contact us pages.
+- `Blogs` analyzes sessions that include `/blog/...` pages or the `/blogs` index. It reports blog sessions and post-blog movement to pricing, schedule demo, and contact us pages, along with source mix, next-page behavior, and opportunity flags.
 - `Journey Sankey` is a website-wide drop-off view built from `page_sequence`. It shows landing-page movement across journey steps, explicit drop-off nodes at each step, drop-off by step, highest drop-off pages, and a downloadable flow table.
 
 ## Inbound Leads
