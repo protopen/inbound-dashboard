@@ -3,6 +3,7 @@ from urllib.parse import urlparse
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+from supabase import create_client
 
 st.set_page_config(
     page_title="Inbound Dashboard",
@@ -11,8 +12,7 @@ st.set_page_config(
 )
 
 DEFAULT_TRAFFIC_FILE = "bq-results-20260609-135014-1781013034663.csv"
-DEFAULT_LEADS_FILE = "organic_form_submissions_clean_dashboard_fixed (1).csv"
-PHONE_ROWS_REMOVED = 231
+PHONE_ROWS_REMOVED_FALLBACK = 0
 BLOG_PATH_PREFIXES = ("/blog", "/blogs")
 INTENT_PAGE_DEFINITIONS = {
     "pricing": {
@@ -937,24 +937,84 @@ def render_blogs_page(filtered_df):
 
 
 
-@st.cache_data(show_spinner=False)
-def load_leads_data(uploaded_file=None):
-    if uploaded_file is not None:
-        leads = pd.read_csv(uploaded_file)
-    else:
-        leads = pd.read_csv(DEFAULT_LEADS_FILE)
+@st.cache_data(show_spinner=False, ttl=600)
+def load_leads_data():
+    """Load inbound form submissions directly from Supabase.
+
+    Required secrets in .streamlit/secrets.toml:
+
+    [supabase]
+    url = "https://YOUR_PROJECT_ID.supabase.co"
+    anon_key = "YOUR_SUPABASE_ANON_KEY"
+    inbound_leads_table = "YOUR_TABLE_NAME"
+    """
+    try:
+        supabase_config = st.secrets["supabase"]
+        supabase_url = supabase_config["url"]
+        supabase_key = supabase_config["anon_key"]
+        table_name = supabase_config.get("inbound_leads_table", "Inbound-Form-Submissions")
+    except Exception as exc:
+        raise RuntimeError(
+            "Missing Supabase secrets. Add .streamlit/secrets.toml with "
+            "[supabase] url, anon_key, and inbound_leads_table."
+        ) from exc
+
+    client = create_client(supabase_url, supabase_key)
+
+    # Supabase/PostgREST responses are commonly capped per request. Fetch in
+    # batches so the dashboard does not silently miss older submissions.
+    batch_size = 1000
+    offset = 0
+    rows = []
+
+    while True:
+        response = (
+            client
+            .table(table_name)
+            .select("*")
+            .order("created_at", desc=False)
+            .range(offset, offset + batch_size - 1)
+            .execute()
+        )
+        data = response.data or []
+        rows.extend(data)
+        if len(data) < batch_size:
+            break
+        offset += batch_size
+
+    leads = pd.DataFrame(rows)
+    if leads.empty:
+        return leads
 
     if "created_at" in leads.columns:
         leads["created_at_dt"] = pd.to_datetime(
             leads["created_at"],
             errors="coerce",
-            dayfirst=True,
+            utc=True,
         )
         leads["created_date"] = leads["created_at_dt"].dt.date
         leads["month"] = leads["created_at_dt"].dt.to_period("M").astype(str)
 
     return leads
 
+
+def has_phone_value(value):
+    if pd.isna(value):
+        return False
+    value = str(value).strip()
+    return bool(value) and value.lower() not in {"nan", "none", "null"}
+
+
+def included_leads_only(leads):
+    if "Phone Number" not in leads.columns:
+        return leads.copy()
+    return leads[~leads["Phone Number"].apply(has_phone_value)].copy()
+
+
+def phone_rows_removed_count(leads):
+    if "Phone Number" not in leads.columns:
+        return PHONE_ROWS_REMOVED_FALLBACK
+    return int(leads["Phone Number"].apply(has_phone_value).sum())
 
 def apply_leads_filters(leads):
     filtered = leads.copy()
@@ -1025,7 +1085,14 @@ def apply_leads_filters(leads):
 
 def render_inbound_leads_dashboard(leads):
     st.title("Organic Form Submissions Dashboard")
-    filtered = apply_leads_filters(leads)
+
+    if leads.empty:
+        st.info("No inbound lead rows were returned from Supabase.")
+        return
+
+    phone_rows_removed = phone_rows_removed_count(leads)
+    included_leads = included_leads_only(leads)
+    filtered = apply_leads_filters(included_leads)
 
     if filtered.empty:
         st.info("No inbound lead rows match the current filters.")
@@ -1042,7 +1109,7 @@ def render_inbound_leads_dashboard(leads):
     metric_cols[1].metric("Prospective merchant queries", f"{merchant_count:,}")
     metric_cols[2].metric("Customer queries", f"{customer_count:,}")
     metric_cols[3].metric("Spam queries", f"{spam_count:,}")
-    metric_cols[4].metric("Phone rows removed", f"{PHONE_ROWS_REMOVED:,}")
+    metric_cols[4].metric("Phone rows removed", f"{phone_rows_removed:,}")
 
     left_col, right_col = st.columns([1, 1.25])
 
@@ -1052,7 +1119,7 @@ def render_inbound_leads_dashboard(leads):
             {"Metric": "Prospective merchant queries", "Value": merchant_count},
             {"Metric": "Customer queries", "Value": customer_count},
             {"Metric": "Spam queries", "Value": spam_count},
-            {"Metric": "Phone rows removed", "Value": PHONE_ROWS_REMOVED},
+            {"Metric": "Phone rows removed", "Value": phone_rows_removed},
         ]
     )
     with left_col:
@@ -1207,10 +1274,9 @@ if selected_dashboard == "Website Traffic":
 else:
     try:
         leads_df = load_leads_data()
-    except FileNotFoundError:
-        st.error(
-            f"Could not find `{DEFAULT_LEADS_FILE}`. Place the CSV in the same folder as this app."
-        )
+    except Exception as exc:
+        st.error("Could not load inbound leads from Supabase.")
+        st.caption(str(exc))
         st.stop()
 
     render_inbound_leads_dashboard(leads_df)
