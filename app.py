@@ -937,6 +937,23 @@ def render_blogs_page(filtered_df):
 
 
 
+
+def parse_supabase_datetime_series(series):
+    """Parse Supabase timestamp strings such as 2026-06-25 10:22:37.533225+00.
+
+    Supabase/Postgres can return timezone offsets as +00 instead of +00:00.
+    Pandas usually parses both, but normalizing the suffix keeps the Streamlit
+    date filter reliable across pandas versions. Returned timestamps are naive UTC.
+    """
+    cleaned = (
+        series
+        .astype(str)
+        .str.strip()
+        .str.replace(r"([+-]\d{2})$", r"\1:00", regex=True)
+    )
+    parsed = pd.to_datetime(cleaned, errors="coerce", utc=True)
+    return parsed.dt.tz_convert(None)
+
 def get_supabase_config():
     try:
         supabase_config = st.secrets["supabase"]
@@ -989,11 +1006,7 @@ def load_leads_data():
         # Normalize Supabase timestamps once so date filtering is reliable.
         # Supabase returns timezone-aware ISO strings; convert to naive UTC
         # timestamps before deriving date/month fields for Streamlit widgets.
-        leads["created_at_dt"] = pd.to_datetime(
-            leads["created_at"],
-            errors="coerce",
-            utc=True,
-        ).dt.tz_convert(None)
+        leads["created_at_dt"] = parse_supabase_datetime_series(leads["created_at"])
         leads["created_date"] = leads["created_at_dt"].dt.date
         leads["month"] = leads["created_at_dt"].dt.to_period("M").astype(str)
 
@@ -1085,8 +1098,9 @@ def apply_leads_filters(leads, key_prefix="lead"):
         if "created_at_dt" in filtered.columns:
             valid_dates = pd.to_datetime(filtered["created_at_dt"], errors="coerce")
         elif "created_at" in filtered.columns:
-            valid_dates = pd.to_datetime(filtered["created_at"], errors="coerce", utc=True).dt.tz_convert(None)
+            valid_dates = parse_supabase_datetime_series(filtered["created_at"])
             filtered["created_at_dt"] = valid_dates
+            filtered["created_date"] = valid_dates.dt.date
         else:
             valid_dates = pd.Series(dtype="datetime64[ns]")
 
@@ -1108,9 +1122,11 @@ def apply_leads_filters(leads, key_prefix="lead"):
                 if start_date and end_date:
                     start_ts = pd.Timestamp(start_date)
                     end_ts = pd.Timestamp(end_date) + pd.Timedelta(days=1) - pd.Timedelta(microseconds=1)
+                    if "created_date" not in filtered.columns:
+                        filtered["created_date"] = filtered["created_at_dt"].dt.date
                     filtered = filtered[
-                        (filtered["created_at_dt"] >= start_ts)
-                        & (filtered["created_at_dt"] <= end_ts)
+                        (filtered["created_date"] >= start_date)
+                        & (filtered["created_date"] <= end_date)
                     ]
         else:
             st.caption("Date filter unavailable because `created_at` could not be parsed.")
