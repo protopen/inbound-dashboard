@@ -67,7 +67,7 @@ Expected Supabase columns:
 - `Business Type`
 - `Monthly Order Volume`
 
-Rows with a populated `Phone Number` are excluded from included submission metrics and counted under **Phone rows removed**.
+Rows with a populated `Phone Number` are now included in live Home metrics, tables, filters, and CSV downloads. The Home dashboard also shows **Rows with phone number** as a diagnostic metric.
 
 The Inbound Leads section has two tabs:
 
@@ -82,7 +82,7 @@ The `Historical Data` tab is not live-filtered. It shows the legacy hard-coded d
 - Prospective merchant queries
 - Customer queries
 - Spam queries
-- Phone rows removed
+- Rows with phone number
 - Intent split with counts and shares
 - Monthly included submissions by intent
 - Prospective merchant query month-over-month line chart

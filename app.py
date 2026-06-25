@@ -1064,14 +1064,16 @@ def has_phone_value(value):
 
 
 def included_leads_only(leads):
-    if "Phone Number" not in leads.columns:
-        return leads.copy()
-    return leads[~leads["Phone Number"].apply(has_phone_value)].copy()
+    # Include every live Supabase row in the Home dashboard.
+    # Earlier versions excluded rows with populated Phone Number values; that
+    # exclusion has been removed so phone-number rows remain visible in metrics,
+    # filters, tables, and CSV downloads.
+    return leads.copy()
 
 
-def phone_rows_removed_count(leads):
+def phone_rows_count(leads):
     if "Phone Number" not in leads.columns:
-        return PHONE_ROWS_REMOVED_FALLBACK
+        return 0
     return int(leads["Phone Number"].apply(has_phone_value).sum())
 
 def unique_display_values(df, column):
@@ -1179,9 +1181,9 @@ def render_inbound_leads_dashboard(leads, title="Website Form Submissions", key_
         render_supabase_empty_state()
         return
 
-    phone_rows_removed = phone_rows_removed_count(leads)
     included_leads = included_leads_only(leads)
     filtered = apply_leads_filters(included_leads, key_prefix=key_prefix)
+    phone_rows = phone_rows_count(filtered)
 
     if filtered.empty:
         st.info("No inbound lead rows match the current filters.")
@@ -1199,7 +1201,7 @@ def render_inbound_leads_dashboard(leads, title="Website Form Submissions", key_
     metric_cols[1].metric("Prospective merchant queries", f"{merchant_count:,}")
     metric_cols[2].metric("Customer queries", f"{customer_count:,}")
     metric_cols[3].metric("Spam queries", f"{spam_count:,}")
-    metric_cols[4].metric("Phone rows removed", f"{phone_rows_removed:,}")
+    metric_cols[4].metric("Rows with phone number", f"{phone_rows:,}")
 
     left_col, right_col = st.columns([1, 1.25])
 
@@ -1209,7 +1211,7 @@ def render_inbound_leads_dashboard(leads, title="Website Form Submissions", key_
             {"Metric": "Prospective merchant queries", "Value": merchant_count},
             {"Metric": "Customer queries", "Value": customer_count},
             {"Metric": "Spam queries", "Value": spam_count},
-            {"Metric": "Phone rows removed", "Value": phone_rows_removed},
+            {"Metric": "Rows with phone number", "Value": phone_rows},
         ]
     )
     with left_col:
@@ -1316,12 +1318,12 @@ def render_inbound_leads_dashboard(leads, title="Website Form Submissions", key_
         "Message",
     ]
     detail_cols = [col for col in detail_cols if col in filtered.columns]
-    st.markdown("### Included submission rows")
+    st.markdown("### Submission rows")
     st.dataframe(filtered[detail_cols], use_container_width=True, hide_index=True, height=520)
 
     csv = filtered[detail_cols].to_csv(index=False).encode("utf-8")
     st.download_button(
-        label="Download filtered inbound leads CSV",
+        label="Download filtered website form submissions CSV",
         data=csv,
         file_name=f"filtered_inbound_leads_{key_prefix}.csv",
         mime="text/csv",
