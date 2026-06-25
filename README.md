@@ -69,7 +69,14 @@ Expected Supabase columns:
 
 Rows with a populated `Phone Number` are excluded from included submission metrics and counted under **Phone rows removed**.
 
-The dashboard includes:
+The Inbound Leads section has two tabs:
+
+- `Home` shows all live inbound lead rows returned from Supabase.
+- `Historical Data` shows the hard-coded legacy summary for submissions up to and including June 15, 2026.
+
+The `Home` tab includes live Supabase filters for date range, intent type, form type, and page path. It does not hard-split data by June 15. The date filter uses normalized `created_at` timestamps from Supabase, and the intent type dropdown is populated dynamically from the unique `Intent Type` values currently returned by Supabase.
+
+The `Historical Data` tab is not live-filtered. It shows the legacy hard-coded dashboard from the prior spreadsheet summary, including:
 
 - Included submissions
 - Prospective merchant queries
@@ -77,12 +84,10 @@ The dashboard includes:
 - Spam queries
 - Phone rows removed
 - Intent split with counts and shares
+- Monthly included submissions by intent
 - Prospective merchant query month-over-month line chart
 - Monthly trend by intent type
 - Merchant share and merchant month-over-month growth
-- Filtered submission rows with CSV download
-
-The Inbound Leads page filters include date range, intent type, form type, and page path.
 
 ## Website Traffic
 

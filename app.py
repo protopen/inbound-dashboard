@@ -986,13 +986,25 @@ def load_leads_data():
         return leads
 
     if "created_at" in leads.columns:
+        # Normalize Supabase timestamps once so date filtering is reliable.
+        # Supabase returns timezone-aware ISO strings; convert to naive UTC
+        # timestamps before deriving date/month fields for Streamlit widgets.
         leads["created_at_dt"] = pd.to_datetime(
             leads["created_at"],
             errors="coerce",
             utc=True,
-        )
+        ).dt.tz_convert(None)
         leads["created_date"] = leads["created_at_dt"].dt.date
         leads["month"] = leads["created_at_dt"].dt.to_period("M").astype(str)
+
+    if "Intent Type" in leads.columns:
+        leads["intent_type_clean"] = (
+            leads["Intent Type"]
+            .fillna("Unknown")
+            .astype(str)
+            .str.strip()
+            .replace({"": "Unknown", "nan": "Unknown", "None": "Unknown", "null": "Unknown"})
+        )
 
     return leads
 
@@ -1049,75 +1061,94 @@ def phone_rows_removed_count(leads):
         return PHONE_ROWS_REMOVED_FALLBACK
     return int(leads["Phone Number"].apply(has_phone_value).sum())
 
-def apply_leads_filters(leads):
+def unique_display_values(df, column):
+    if column not in df.columns:
+        return []
+    values = (
+        df[column]
+        .dropna()
+        .astype(str)
+        .str.strip()
+    )
+    values = values[~values.str.lower().isin(["", "nan", "none", "null"])]
+    return sorted(values.unique().tolist())
+
+
+def apply_leads_filters(leads, key_prefix="lead"):
     filtered = leads.copy()
     st.subheader("Filters")
 
     col1, col2, col3, col4 = st.columns([1.25, 1, 1, 1])
 
     with col1:
-        if "created_date" in filtered.columns and filtered["created_date"].notna().any():
-            min_date = filtered["created_date"].min()
-            max_date = filtered["created_date"].max()
+        if "created_at_dt" in filtered.columns and filtered["created_at_dt"].notna().any():
+            min_date = filtered["created_at_dt"].min().date()
+            max_date = filtered["created_at_dt"].max().date()
             selected_range = st.date_input(
                 "Lead date range",
                 value=(min_date, max_date),
                 min_value=min_date,
                 max_value=max_date,
                 label_visibility="collapsed",
-                key="lead_date_range",
+                key=f"{key_prefix}_date_range",
             )
+
+            # Streamlit can return a single date while the user is editing the
+            # range. Only filter when both start and end dates are available.
             if isinstance(selected_range, tuple) and len(selected_range) == 2:
                 start_date, end_date = selected_range
-                filtered = filtered[
-                    (filtered["created_date"] >= start_date)
-                    & (filtered["created_date"] <= end_date)
-                ]
+                if start_date and end_date:
+                    start_ts = pd.Timestamp(start_date)
+                    end_ts = pd.Timestamp(end_date) + pd.Timedelta(days=1) - pd.Timedelta(microseconds=1)
+                    filtered = filtered[
+                        (filtered["created_at_dt"] >= start_ts)
+                        & (filtered["created_at_dt"] <= end_ts)
+                    ]
 
     with col2:
-        if "Intent Type" in filtered.columns:
-            intents = filtered["Intent Type"].dropna().astype(str).sort_values().unique().tolist()
+        intent_col = "intent_type_clean" if "intent_type_clean" in filtered.columns else "Intent Type"
+        if intent_col in filtered.columns:
+            intents = unique_display_values(filtered, intent_col)
             selected_intents = st.multiselect(
                 "Intent type",
                 options=intents,
                 placeholder="All intent types",
                 label_visibility="collapsed",
-                key="lead_intent_filter",
+                key=f"{key_prefix}_intent_filter",
             )
             if selected_intents:
-                filtered = filtered[filtered["Intent Type"].astype(str).isin(selected_intents)]
+                filtered = filtered[filtered[intent_col].astype(str).str.strip().isin(selected_intents)]
 
     with col3:
         if "Form Type" in filtered.columns:
-            form_types = filtered["Form Type"].dropna().astype(str).sort_values().unique().tolist()
+            form_types = unique_display_values(filtered, "Form Type")
             selected_forms = st.multiselect(
                 "Form type",
                 options=form_types,
                 placeholder="All form types",
                 label_visibility="collapsed",
-                key="lead_form_filter",
+                key=f"{key_prefix}_form_filter",
             )
             if selected_forms:
-                filtered = filtered[filtered["Form Type"].astype(str).isin(selected_forms)]
+                filtered = filtered[filtered["Form Type"].astype(str).str.strip().isin(selected_forms)]
 
     with col4:
         if "Page Path" in filtered.columns:
-            pages = filtered["Page Path"].dropna().astype(str).sort_values().unique().tolist()
+            pages = unique_display_values(filtered, "Page Path")
             selected_pages = st.multiselect(
                 "Page path",
                 options=pages,
                 placeholder="All page paths",
                 label_visibility="collapsed",
-                key="lead_page_filter",
+                key=f"{key_prefix}_page_filter",
             )
             if selected_pages:
-                filtered = filtered[filtered["Page Path"].astype(str).isin(selected_pages)]
+                filtered = filtered[filtered["Page Path"].astype(str).str.strip().isin(selected_pages)]
 
     return filtered
 
-
-def render_inbound_leads_dashboard(leads):
-    st.title("Organic Form Submissions Dashboard")
+def render_inbound_leads_dashboard(leads, title="Organic Form Submissions Dashboard", key_prefix="lead"):
+    st.title(title)
 
     if leads.empty:
         render_supabase_empty_state()
@@ -1125,13 +1156,14 @@ def render_inbound_leads_dashboard(leads):
 
     phone_rows_removed = phone_rows_removed_count(leads)
     included_leads = included_leads_only(leads)
-    filtered = apply_leads_filters(included_leads)
+    filtered = apply_leads_filters(included_leads, key_prefix=key_prefix)
 
     if filtered.empty:
         st.info("No inbound lead rows match the current filters.")
         return
 
-    intent_counts = filtered["Intent Type"].fillna("Unknown").value_counts() if "Intent Type" in filtered.columns else pd.Series(dtype=int)
+    intent_metric_col = "intent_type_clean" if "intent_type_clean" in filtered.columns else "Intent Type"
+    intent_counts = filtered[intent_metric_col].fillna("Unknown").value_counts() if intent_metric_col in filtered.columns else pd.Series(dtype=int)
     total_included = len(filtered)
     merchant_count = int(intent_counts.get("Prospective Merchant Query", 0))
     customer_count = int(intent_counts.get("Customer Query", 0))
@@ -1182,7 +1214,7 @@ def render_inbound_leads_dashboard(leads):
         monthly = (
             filtered.pivot_table(
                 index="month",
-                columns="Intent Type",
+                columns=intent_metric_col,
                 values="created_at",
                 aggfunc="count",
                 fill_value=0,
@@ -1194,9 +1226,7 @@ def render_inbound_leads_dashboard(leads):
             if col not in monthly.columns:
                 monthly[col] = 0
         monthly = monthly.sort_values("month")
-        monthly["Total Included"] = (
-            monthly["Prospective Merchant Query"] + monthly["Customer Query"] + monthly["Spam Query"]
-        )
+        monthly["Total Included"] = monthly.drop(columns=["month"], errors="ignore").sum(axis=1)
         monthly["Merchant Share"] = monthly.apply(
             lambda r: pct(r["Prospective Merchant Query"], r["Total Included"]), axis=1
         )
@@ -1268,9 +1298,159 @@ def render_inbound_leads_dashboard(leads):
     st.download_button(
         label="Download filtered inbound leads CSV",
         data=csv,
-        file_name="filtered_inbound_leads.csv",
+        file_name=f"filtered_inbound_leads_{key_prefix}.csv",
         mime="text/csv",
     )
+
+
+
+def build_historical_inbound_summary():
+    """Hard-coded legacy organic form dashboard data through June 15, 2026."""
+    summary = pd.DataFrame(
+        [
+            {"Metric": "Included submissions", "Value": 307},
+            {"Metric": "Prospective merchant queries", "Value": 93},
+            {"Metric": "Customer queries", "Value": 123},
+            {"Metric": "Spam queries", "Value": 91},
+            {"Metric": "Phone rows removed", "Value": 231},
+        ]
+    )
+    intent = pd.DataFrame(
+        [
+            {"Intent": "Prospective Merchant Query", "Count": 93, "Share": 30.2931596},
+            {"Intent": "Customer Query", "Count": 123, "Share": 40.0651466},
+            {"Intent": "Spam Query", "Count": 91, "Share": 29.6416938},
+        ]
+    )
+    monthly = pd.DataFrame(
+        [
+            {"Month": "2026-02", "Prospective Merchant Query": 23, "Customer Query": 27, "Spam Query": 4, "Total Included": 54, "Merchant Share": 42.6, "Merchant MoM Growth": 0.0},
+            {"Month": "2026-03", "Prospective Merchant Query": 23, "Customer Query": 24, "Spam Query": 13, "Total Included": 60, "Merchant Share": 38.3, "Merchant MoM Growth": 0.0},
+            {"Month": "2026-04", "Prospective Merchant Query": 26, "Customer Query": 31, "Spam Query": 35, "Total Included": 92, "Merchant Share": 28.3, "Merchant MoM Growth": 13.0},
+            {"Month": "2026-05", "Prospective Merchant Query": 19, "Customer Query": 36, "Spam Query": 33, "Total Included": 88, "Merchant Share": 21.6, "Merchant MoM Growth": -26.9},
+            {"Month": "2026-06", "Prospective Merchant Query": 2, "Customer Query": 5, "Spam Query": 6, "Total Included": 13, "Merchant Share": 15.4, "Merchant MoM Growth": -89.5},
+        ]
+    )
+    return summary, intent, monthly
+
+
+def render_historical_inbound_dashboard():
+    st.title("Historical Organic Form Submissions")
+    st.caption("Hard-coded legacy summary for all entries up to and including June 15, 2026.")
+
+    summary, intent_table, monthly = build_historical_inbound_summary()
+
+    metric_lookup = dict(zip(summary["Metric"], summary["Value"]))
+    metric_cols = st.columns(5)
+    metric_cols[0].metric("Included submissions", f"{metric_lookup['Included submissions']:,}")
+    metric_cols[1].metric("Prospective merchant queries", f"{metric_lookup['Prospective merchant queries']:,}")
+    metric_cols[2].metric("Customer queries", f"{metric_lookup['Customer queries']:,}")
+    metric_cols[3].metric("Spam queries", f"{metric_lookup['Spam queries']:,}")
+    metric_cols[4].metric("Phone rows removed", f"{metric_lookup['Phone rows removed']:,}")
+
+    chart_col1, chart_col2 = st.columns([1.2, 1])
+    with chart_col1:
+        trend_fig = go.Figure()
+        trend_fig.add_trace(go.Scatter(x=monthly["Month"], y=monthly["Prospective Merchant Query"], mode="lines+markers", name="Prospective Merchant Query"))
+        trend_fig.add_trace(go.Scatter(x=monthly["Month"], y=monthly["Customer Query"], mode="lines+markers", name="Customer Query"))
+        trend_fig.add_trace(go.Scatter(x=monthly["Month"], y=monthly["Spam Query"], mode="lines+markers", name="Spam Query"))
+        trend_fig.update_layout(
+            title="Monthly included submissions by intent",
+            xaxis_title="Month",
+            yaxis_title="Submissions",
+            height=380,
+            margin=dict(l=10, r=10, t=60, b=10),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+        )
+        st.plotly_chart(trend_fig, use_container_width=True)
+
+    with chart_col2:
+        intent_fig = go.Figure(
+            data=[
+                go.Pie(
+                    labels=intent_table["Intent"],
+                    values=intent_table["Count"],
+                    hole=0.45,
+                    textinfo="label+percent",
+                )
+            ]
+        )
+        intent_fig.update_layout(
+            title="Intent split",
+            height=380,
+            margin=dict(l=10, r=10, t=60, b=10),
+        )
+        st.plotly_chart(intent_fig, use_container_width=True)
+
+    merchant_fig = go.Figure()
+    merchant_fig.add_trace(
+        go.Scatter(
+            x=monthly["Month"],
+            y=monthly["Prospective Merchant Query"],
+            mode="lines+markers",
+            name="Prospective merchant queries",
+            customdata=monthly[["Merchant MoM Growth", "Merchant Share"]],
+            hovertemplate=(
+                "Month: %{x}<br>"
+                "Merchant queries: %{y}<br>"
+                "MoM growth: %{customdata[0]:.1f}%<br>"
+                "Merchant share: %{customdata[1]:.1f}%<extra></extra>"
+            ),
+        )
+    )
+    merchant_fig.update_layout(
+        title="Prospective merchant query MoM trend",
+        xaxis_title="Month",
+        yaxis_title="Prospective merchant queries",
+        height=340,
+        margin=dict(l=10, r=10, t=60, b=10),
+    )
+    st.plotly_chart(merchant_fig, use_container_width=True)
+
+    left_col, right_col = st.columns([1, 1.25])
+    with left_col:
+        st.markdown("### Summary")
+        st.dataframe(summary, use_container_width=True, hide_index=True)
+    with right_col:
+        st.markdown("### Intent split")
+        st.dataframe(
+            intent_table,
+            use_container_width=True,
+            hide_index=True,
+            column_config={"Share": st.column_config.NumberColumn("Share", format="%.1f%%")},
+        )
+
+    st.markdown("### Monthly trend")
+    st.dataframe(
+        monthly,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Merchant Share": st.column_config.NumberColumn("Merchant Share", format="%.1f%%"),
+            "Merchant MoM Growth": st.column_config.NumberColumn("Merchant MoM Growth", format="%.1f%%"),
+        },
+    )
+
+def render_inbound_leads_section(leads):
+    st.title("Inbound Leads")
+
+    if leads.empty:
+        render_supabase_empty_state()
+        return
+
+    home_tab, historical_tab = st.tabs(["Home", "Historical Data"])
+
+    with home_tab:
+        st.caption("Live Supabase data. Includes all loaded inbound lead rows.")
+        render_inbound_leads_dashboard(
+            leads.copy(),
+            title="Organic Form Submissions Dashboard",
+            key_prefix="home_leads",
+        )
+
+    with historical_tab:
+        render_historical_inbound_dashboard()
+
 
 st.title("Inbound Dashboard")
 
@@ -1312,4 +1492,4 @@ else:
         st.caption(str(exc))
         st.stop()
 
-    render_inbound_leads_dashboard(leads_df)
+    render_inbound_leads_section(leads_df)
