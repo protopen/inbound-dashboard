@@ -937,28 +937,27 @@ def render_blogs_page(filtered_df):
 
 
 
-@st.cache_data(show_spinner=False, ttl=600)
-def load_leads_data():
-    """Load inbound form submissions directly from Supabase.
-
-    Required secrets in .streamlit/secrets.toml:
-
-    [supabase]
-    url = "https://YOUR_PROJECT_ID.supabase.co"
-    anon_key = "YOUR_SUPABASE_ANON_KEY"
-    inbound_leads_table = "YOUR_TABLE_NAME"
-    """
+def get_supabase_config():
     try:
         supabase_config = st.secrets["supabase"]
         supabase_url = supabase_config["url"]
-        supabase_key = supabase_config["anon_key"]
+        # Prefer service_role_key for private internal dashboards. Fall back to anon_key.
+        supabase_key = supabase_config.get("service_role_key") or supabase_config.get("anon_key")
         table_name = supabase_config.get("inbound_leads_table", "Inbound-Form-Submissions")
+        if not supabase_key:
+            raise KeyError("anon_key or service_role_key")
+        return supabase_url, supabase_key, table_name
     except Exception as exc:
         raise RuntimeError(
             "Missing Supabase secrets. Add .streamlit/secrets.toml with "
-            "[supabase] url, anon_key, and inbound_leads_table."
+            "[supabase] url, anon_key or service_role_key, and inbound_leads_table."
         ) from exc
 
+
+@st.cache_data(show_spinner=False, ttl=600)
+def load_leads_data():
+    """Load inbound form submissions directly from Supabase."""
+    supabase_url, supabase_key, table_name = get_supabase_config()
     client = create_client(supabase_url, supabase_key)
 
     # Supabase/PostgREST responses are commonly capped per request. Fetch in
@@ -997,6 +996,40 @@ def load_leads_data():
 
     return leads
 
+
+def render_supabase_empty_state():
+    st.warning("No inbound lead rows were returned from Supabase.")
+    try:
+        supabase_url, supabase_key, table_name = get_supabase_config()
+        key_type = "service_role_key" if "service_role_key" in st.secrets.get("supabase", {}) else "anon_key"
+        st.caption(f"Connected to `{supabase_url}` and queried table `{table_name}` using `{key_type}`.")
+    except Exception:
+        st.caption("Could not read Supabase connection settings from Streamlit secrets.")
+
+    st.markdown(
+        """
+Most common causes:
+
+1. **Row Level Security is blocking anon reads.** In Supabase, an anon key often returns 0 rows unless a SELECT policy allows it.
+2. **The table name in secrets does not exactly match the Supabase table name.** For your schema it should usually be `Inbound-Form-Submissions`.
+3. **The table is in another schema or has no rows yet.** This app currently queries the `public` schema through the Supabase REST API.
+
+For an internal dashboard, the simplest secure fix is to use the Supabase **service role key** in Streamlit secrets instead of exposing a public SELECT policy.
+        """
+    )
+
+    with st.expander("Recommended secrets.toml"):
+        st.code(
+            '[supabase]\nurl = "https://rdhnojmvamxkwirsnzue.supabase.co"\nservice_role_key = "PASTE_YOUR_SERVICE_ROLE_KEY_HERE"\ninbound_leads_table = "Inbound-Form-Submissions"',
+            language="toml",
+        )
+
+    with st.expander("Alternative: allow anon SELECT through RLS"):
+        st.code(
+            'create policy "Allow dashboard read access"\non public."Inbound-Form-Submissions"\nfor select\nusing (true);',
+            language="sql",
+        )
+        st.caption("Only use this if you are comfortable allowing reads through the anon key, or add a stricter policy for your deployment.")
 
 def has_phone_value(value):
     if pd.isna(value):
@@ -1087,7 +1120,7 @@ def render_inbound_leads_dashboard(leads):
     st.title("Organic Form Submissions Dashboard")
 
     if leads.empty:
-        st.info("No inbound lead rows were returned from Supabase.")
+        render_supabase_empty_state()
         return
 
     phone_rows_removed = phone_rows_removed_count(leads)

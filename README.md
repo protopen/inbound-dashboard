@@ -103,3 +103,26 @@ Website traffic tabs:
 3. Set the main file path to `app.py`.
 4. Add the Supabase values under the app's **Secrets** settings using the same TOML format shown above. The project URL is already filled in; paste the anon key in the `anon_key` field.
 5. Deploy.
+
+
+## Supabase troubleshooting
+
+If the Inbound Leads page shows `No inbound lead rows were returned from Supabase`, the most common cause is Row Level Security blocking reads for the anon key. For a private internal dashboard, prefer using the Supabase `service_role_key` in Streamlit secrets:
+
+```toml
+[supabase]
+url = "https://rdhnojmvamxkwirsnzue.supabase.co"
+service_role_key = "PASTE_YOUR_SUPABASE_SERVICE_ROLE_KEY_HERE"
+inbound_leads_table = "Inbound-Form-Submissions"
+```
+
+Do not commit `.streamlit/secrets.toml` to GitHub.
+
+If you want to keep using the anon key, add a SELECT policy in Supabase for the table. Only do this if you are comfortable with the access pattern:
+
+```sql
+create policy "Allow dashboard read access"
+on public."Inbound-Form-Submissions"
+for select
+using (true);
+```
