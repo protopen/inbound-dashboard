@@ -1089,7 +1089,6 @@ def apply_leads_filters(leads, key_prefix="lead"):
                 value=(min_date, max_date),
                 min_value=min_date,
                 max_value=max_date,
-                label_visibility="collapsed",
                 key=f"{key_prefix}_date_range",
             )
 
@@ -1441,7 +1440,6 @@ def render_inbound_leads_section(leads):
     home_tab, historical_tab = st.tabs(["Home", "Historical Data"])
 
     with home_tab:
-        st.caption("Live Supabase data. Includes all loaded inbound lead rows.")
         render_inbound_leads_dashboard(
             leads.copy(),
             title="Organic Form Submissions Dashboard",
