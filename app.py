@@ -6,7 +6,7 @@ import streamlit as st
 from supabase import create_client
 
 st.set_page_config(
-    page_title="Inbound Dashboard",
+    page_title="Website Form Submissions",
     page_icon="📊",
     layout="wide",
 )
@@ -1076,14 +1076,23 @@ def unique_display_values(df, column):
 
 def apply_leads_filters(leads, key_prefix="lead"):
     filtered = leads.copy()
-    st.subheader("Filters")
+    st.markdown("### Filters")
 
-    col1, col2, col3, col4 = st.columns([1.25, 1, 1, 1])
+    # Keep the date range filter visible on its own row. Earlier versions put it
+    # inside a compact 4-column row, which made it easy to miss on the Home tab.
+    date_col, spacer_col = st.columns([1.4, 2.6])
+    with date_col:
+        if "created_at_dt" in filtered.columns:
+            valid_dates = pd.to_datetime(filtered["created_at_dt"], errors="coerce")
+        elif "created_at" in filtered.columns:
+            valid_dates = pd.to_datetime(filtered["created_at"], errors="coerce", utc=True).dt.tz_convert(None)
+            filtered["created_at_dt"] = valid_dates
+        else:
+            valid_dates = pd.Series(dtype="datetime64[ns]")
 
-    with col1:
-        if "created_at_dt" in filtered.columns and filtered["created_at_dt"].notna().any():
-            min_date = filtered["created_at_dt"].min().date()
-            max_date = filtered["created_at_dt"].max().date()
+        if len(valid_dates) > 0 and valid_dates.notna().any():
+            min_date = valid_dates.min().date()
+            max_date = valid_dates.max().date()
             selected_range = st.date_input(
                 "Lead date range",
                 value=(min_date, max_date),
@@ -1103,8 +1112,12 @@ def apply_leads_filters(leads, key_prefix="lead"):
                         (filtered["created_at_dt"] >= start_ts)
                         & (filtered["created_at_dt"] <= end_ts)
                     ]
+        else:
+            st.caption("Date filter unavailable because `created_at` could not be parsed.")
 
-    with col2:
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
         intent_col = "intent_type_clean" if "intent_type_clean" in filtered.columns else "Intent Type"
         if intent_col in filtered.columns:
             intents = unique_display_values(filtered, intent_col)
@@ -1112,33 +1125,30 @@ def apply_leads_filters(leads, key_prefix="lead"):
                 "Intent type",
                 options=intents,
                 placeholder="All intent types",
-                label_visibility="collapsed",
                 key=f"{key_prefix}_intent_filter",
             )
             if selected_intents:
                 filtered = filtered[filtered[intent_col].astype(str).str.strip().isin(selected_intents)]
 
-    with col3:
+    with col2:
         if "Form Type" in filtered.columns:
             form_types = unique_display_values(filtered, "Form Type")
             selected_forms = st.multiselect(
                 "Form type",
                 options=form_types,
                 placeholder="All form types",
-                label_visibility="collapsed",
                 key=f"{key_prefix}_form_filter",
             )
             if selected_forms:
                 filtered = filtered[filtered["Form Type"].astype(str).str.strip().isin(selected_forms)]
 
-    with col4:
+    with col3:
         if "Page Path" in filtered.columns:
             pages = unique_display_values(filtered, "Page Path")
             selected_pages = st.multiselect(
                 "Page path",
                 options=pages,
                 placeholder="All page paths",
-                label_visibility="collapsed",
                 key=f"{key_prefix}_page_filter",
             )
             if selected_pages:
@@ -1146,7 +1156,7 @@ def apply_leads_filters(leads, key_prefix="lead"):
 
     return filtered
 
-def render_inbound_leads_dashboard(leads, title="Organic Form Submissions Dashboard", key_prefix="lead"):
+def render_inbound_leads_dashboard(leads, title="Website Form Submissions", key_prefix="lead"):
     st.title(title)
 
     if leads.empty:
@@ -1442,15 +1452,13 @@ def render_inbound_leads_section(leads):
     with home_tab:
         render_inbound_leads_dashboard(
             leads.copy(),
-            title="Organic Form Submissions Dashboard",
+            title="Website Form Submissions",
             key_prefix="home_leads",
         )
 
     with historical_tab:
         render_historical_inbound_dashboard()
 
-
-st.title("Inbound Dashboard")
 
 st.sidebar.markdown("### Navigation")
 selected_dashboard = st.sidebar.radio(
