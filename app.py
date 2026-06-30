@@ -1,3 +1,4 @@
+import re
 from urllib.parse import urlparse
 
 import pandas as pd
@@ -938,21 +939,67 @@ def render_blogs_page(filtered_df):
 
 
 
-def parse_supabase_datetime_series(series):
-    """Parse Supabase timestamp strings such as 2026-06-25 10:22:37.533225+00.
+def normalize_supabase_timestamp_text(value):
+    """Normalize common Supabase/Postgres timestamp strings before parsing."""
+    if pd.isna(value):
+        return pd.NA
 
-    Supabase/Postgres can return timezone offsets as +00 instead of +00:00.
-    Pandas usually parses both, but normalizing the suffix keeps the Streamlit
-    date filter reliable across pandas versions. Returned timestamps are naive UTC.
+    text = str(value).strip()
+    if text.lower() in {"", "nan", "none", "null", "nat"}:
+        return pd.NA
+
+    # Supabase/Postgres may return either ISO or SQL-like timestamps, with or
+    # without microseconds, and with timezone suffixes like +00, +0000, +00:00,
+    # or Z. Normalize those variants so all rows filter consistently.
+    text = text.replace("T", " ").replace("Z", "+00:00")
+    text = re.sub(r"([+-]\d{2})$", r"\1:00", text)
+    text = re.sub(r"([+-]\d{2})(\d{2})$", r"\1:\2", text)
+    return text
+
+
+def parse_supabase_datetime_series(series):
+    """Parse mixed Supabase/Postgres timestamp strings reliably.
+
+    Handles all observed formats from the inbound form submissions table:
+      - 2026-05-01 12:50:00+00
+      - 2026-06-25 10:22:37.533225+00
+      - ISO variants with T/Z or +00:00 timezone suffixes
+
+    The function avoids relying only on pandas format="mixed", because older
+    Streamlit environments can run older pandas versions. It first tries the
+    fast vectorized parser, then falls back to per-row parsing for any rows that
+    remain unparsed. Returned timestamps are naive UTC datetimes so Streamlit
+    date filters compare date-to-date cleanly.
     """
-    cleaned = (
-        series
-        .astype(str)
-        .str.strip()
-        .str.replace(r"([+-]\d{2})$", r"\1:00", regex=True)
-    )
-    parsed = pd.to_datetime(cleaned, errors="coerce", utc=True)
-    return parsed.dt.tz_convert(None)
+    if series is None:
+        return pd.Series(dtype="datetime64[ns]")
+
+    cleaned = series.apply(normalize_supabase_timestamp_text)
+
+    try:
+        parsed = pd.to_datetime(cleaned, errors="coerce", utc=True, format="mixed")
+    except (TypeError, ValueError):
+        parsed = pd.to_datetime(cleaned, errors="coerce", utc=True)
+
+    # Fallback for any rows still unparsed. Parsing one value at a time is slower
+    # but much more tolerant, and this table is small enough for it to be safe.
+    if parsed.isna().any() and cleaned.notna().any():
+        parsed_values = []
+        for text, current in zip(cleaned, parsed):
+            if pd.notna(current):
+                parsed_values.append(current)
+                continue
+            if pd.isna(text):
+                parsed_values.append(pd.NaT)
+                continue
+            try:
+                parsed_values.append(pd.to_datetime(text, errors="coerce", utc=True))
+            except Exception:
+                parsed_values.append(pd.NaT)
+        parsed = pd.Series(parsed_values, index=series.index)
+        parsed = pd.to_datetime(parsed, errors="coerce", utc=True)
+
+    return parsed.dt.tz_convert("UTC").dt.tz_localize(None)
 
 def get_supabase_config():
     try:
@@ -1114,7 +1161,7 @@ def apply_leads_filters(leads, key_prefix="lead"):
                 value=(min_date, max_date),
                 min_value=min_date,
                 max_value=max_date,
-                key=f"{key_prefix}_date_range",
+                key=f"{key_prefix}_date_range_{min_date}_{max_date}",
             )
 
             # Streamlit can return a single date while the user is editing the
@@ -1183,8 +1230,6 @@ def render_inbound_leads_dashboard(leads, title="Website Form Submissions", key_
 
     included_leads = included_leads_only(leads)
     filtered = apply_leads_filters(included_leads, key_prefix=key_prefix)
-    phone_rows = phone_rows_count(filtered)
-
     if filtered.empty:
         st.info("No inbound lead rows match the current filters.")
         return
@@ -1196,12 +1241,11 @@ def render_inbound_leads_dashboard(leads, title="Website Form Submissions", key_
     customer_count = int(intent_counts.get("Customer Query", 0))
     spam_count = int(intent_counts.get("Spam Query", 0))
 
-    metric_cols = st.columns(5)
+    metric_cols = st.columns(4)
     metric_cols[0].metric("Included submissions", f"{total_included:,}")
     metric_cols[1].metric("Prospective merchant queries", f"{merchant_count:,}")
     metric_cols[2].metric("Customer queries", f"{customer_count:,}")
     metric_cols[3].metric("Spam queries", f"{spam_count:,}")
-    metric_cols[4].metric("Rows with phone number", f"{phone_rows:,}")
 
     left_col, right_col = st.columns([1, 1.25])
 
@@ -1211,7 +1255,6 @@ def render_inbound_leads_dashboard(leads, title="Website Form Submissions", key_
             {"Metric": "Prospective merchant queries", "Value": merchant_count},
             {"Metric": "Customer queries", "Value": customer_count},
             {"Metric": "Spam queries", "Value": spam_count},
-            {"Metric": "Rows with phone number", "Value": phone_rows},
         ]
     )
     with left_col:
@@ -1368,7 +1411,7 @@ def render_historical_inbound_dashboard():
     summary, intent_table, monthly = build_historical_inbound_summary()
 
     metric_lookup = dict(zip(summary["Metric"], summary["Value"]))
-    metric_cols = st.columns(5)
+    metric_cols = st.columns(4)
     metric_cols[0].metric("Included submissions", f"{metric_lookup['Included submissions']:,}")
     metric_cols[1].metric("Prospective merchant queries", f"{metric_lookup['Prospective merchant queries']:,}")
     metric_cols[2].metric("Customer queries", f"{metric_lookup['Customer queries']:,}")

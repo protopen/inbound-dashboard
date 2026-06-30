@@ -67,7 +67,7 @@ Expected Supabase columns:
 - `Business Type`
 - `Monthly Order Volume`
 
-Rows with a populated `Phone Number` are now included in live Home metrics, tables, filters, and CSV downloads. The Home dashboard also shows **Rows with phone number** as a diagnostic metric.
+Rows with a populated `Phone Number` are included in live Home tables, filters, metrics, and CSV downloads; they are no longer excluded from the dashboard.
 
 The Inbound Leads section has two tabs:
 
@@ -82,7 +82,6 @@ The `Historical Data` tab is not live-filtered. It shows the legacy hard-coded d
 - Prospective merchant queries
 - Customer queries
 - Spam queries
-- Rows with phone number
 - Intent split with counts and shares
 - Monthly included submissions by intent
 - Prospective merchant query month-over-month line chart
@@ -131,3 +130,6 @@ on public."Inbound-Form-Submissions"
 for select
 using (true);
 ```
+
+### Date parsing note
+The Inbound Leads dashboard normalizes Supabase/Postgres timestamps with mixed precision, including `2026-05-01 12:50:00+00` and `2026-06-25 10:22:37.533225+00`, plus ISO variants with `T`, `Z`, `+00`, `+0000`, or `+00:00` timezone suffixes, before applying date filters. The date-range widget key also changes when the loaded min/max dates change, so Streamlit does not keep an old cached range after new rows are added.
