@@ -74,7 +74,11 @@ The Inbound Leads section has two tabs:
 - `Home` shows all live inbound lead rows returned from Supabase.
 - `Historical Data` shows the hard-coded legacy summary for submissions up to and including June 15, 2026.
 
-The `Home` tab includes live Supabase filters for date range, intent type, form type, and page path. It does not hard-split data by June 15. The date filter uses normalized `created_at` timestamps from Supabase, and the intent type dropdown is populated dynamically from the unique `Intent Type` values currently returned by Supabase.
+The `Home` tab includes live Supabase filters for date range, intent type, form type, and page path. It does not hard-split data by June 15. The date filter uses normalized `created_at` timestamps from Supabase, defaults to June 1, 2026 through the latest available date when possible, and the intent type dropdown is populated dynamically from the unique `Intent Type` values currently returned by Supabase.
+
+
+
+The live `Home` trend chart has a `Daily` / `Monthly` toggle. `Daily` is selected by default and plots prospective merchant queries by day for the active date range. `Monthly` keeps the previous month-over-month view with merchant share and MoM growth.
 
 The `Historical Data` tab is not live-filtered. It shows the legacy hard-coded dashboard from the prior spreadsheet summary, including:
 
@@ -133,3 +137,7 @@ using (true);
 
 ### Date parsing note
 The Inbound Leads dashboard normalizes Supabase/Postgres timestamps with mixed precision, including `2026-05-01 12:50:00+00` and `2026-06-25 10:22:37.533225+00`, plus ISO variants with `T`, `Z`, `+00`, `+0000`, or `+00:00` timezone suffixes, before applying date filters. The date-range widget key also changes when the loaded min/max dates change, so Streamlit does not keep an old cached range after new rows are added.
+
+## Intent normalization
+
+The live Inbound Leads dashboard clubs `Lead B2B` and `Prospective Merchant Query` into a single displayed intent: `Prospective Merchant Query`. This affects KPIs, filters, intent split, daily trend, monthly trend, tables, and CSV downloads.

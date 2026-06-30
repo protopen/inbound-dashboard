@@ -1065,6 +1065,15 @@ def load_leads_data():
             .str.strip()
             .replace({"": "Unknown", "nan": "Unknown", "None": "Unknown", "null": "Unknown"})
         )
+        # Treat legacy/new B2B lead labels as the same merchant intent so
+        # KPIs, filters, trend charts, and intent split do not double-count
+        # the same business category under two names.
+        leads["intent_type_clean"] = leads["intent_type_clean"].replace({
+            "Lead B2B": "Prospective Merchant Query",
+            "Lead B2B ": "Prospective Merchant Query",
+            "lead b2b": "Prospective Merchant Query",
+            "Prospective Merchant Queries": "Prospective Merchant Query",
+        })
 
     return leads
 
@@ -1156,12 +1165,16 @@ def apply_leads_filters(leads, key_prefix="lead"):
         if len(valid_dates) > 0 and valid_dates.notna().any():
             min_date = valid_dates.min().date()
             max_date = valid_dates.max().date()
+            default_start_date = max(min_date, pd.Timestamp("2026-06-01").date())
+            if default_start_date > max_date:
+                default_start_date = min_date
+
             selected_range = st.date_input(
                 "Lead date range",
-                value=(min_date, max_date),
+                value=(default_start_date, max_date),
                 min_value=min_date,
                 max_value=max_date,
-                key=f"{key_prefix}_date_range_{min_date}_{max_date}",
+                key=f"{key_prefix}_date_range_{min_date}_{max_date}_{default_start_date}",
             )
 
             # Streamlit can return a single date while the user is editing the
@@ -1279,74 +1292,154 @@ def render_inbound_leads_dashboard(leads, title="Website Form Submissions", key_
             column_config={"Share": st.column_config.NumberColumn("Share", format="%.1f%%")},
         )
 
-    st.markdown("### Monthly trend")
-    if "month" in filtered.columns:
-        monthly = (
-            filtered.pivot_table(
-                index="month",
-                columns=intent_metric_col,
-                values="created_at",
-                aggfunc="count",
-                fill_value=0,
-            )
-            .reset_index()
-            .rename_axis(None, axis=1)
+    st.markdown("### Trend")
+    if "created_at_dt" in filtered.columns:
+        trend_granularity = st.radio(
+            "Trend granularity",
+            options=["Daily", "Monthly"],
+            horizontal=True,
+            key=f"{key_prefix}_trend_granularity",
         )
-        for col in ["Prospective Merchant Query", "Customer Query", "Spam Query"]:
-            if col not in monthly.columns:
-                monthly[col] = 0
-        monthly = monthly.sort_values("month")
-        monthly["Total Included"] = monthly.drop(columns=["month"], errors="ignore").sum(axis=1)
-        monthly["Merchant Share"] = monthly.apply(
-            lambda r: pct(r["Prospective Merchant Query"], r["Total Included"]), axis=1
-        )
-        monthly["Merchant MoM Growth"] = monthly["Prospective Merchant Query"].pct_change().fillna(0) * 100
-        monthly = monthly[
-            [
-                "month",
-                "Prospective Merchant Query",
-                "Customer Query",
-                "Spam Query",
-                "Total Included",
-                "Merchant Share",
-                "Merchant MoM Growth",
-            ]
-        ].rename(columns={"month": "Month"})
 
-        merchant_fig = go.Figure()
-        merchant_fig.add_trace(
-            go.Scatter(
-                x=monthly["Month"].astype(str),
-                y=monthly["Prospective Merchant Query"],
-                mode="lines+markers",
-                name="Prospective merchant queries",
-                customdata=monthly[["Merchant MoM Growth", "Merchant Share"]],
-                hovertemplate=(
-                    "Month: %{x}<br>"
-                    "Merchant queries: %{y}<br>"
-                    "MoM growth: %{customdata[0]:.1f}%<br>"
-                    "Merchant share: %{customdata[1]:.1f}%<extra></extra>"
-                ),
-            )
-        )
-        merchant_fig.update_layout(
-            title="Prospective merchant query MoM trend",
-            xaxis_title="Month",
-            yaxis_title="Prospective merchant queries",
-            height=360,
-            margin=dict(l=10, r=10, t=60, b=10),
-        )
-        st.plotly_chart(merchant_fig, use_container_width=True)
+        trend_base = filtered.copy()
+        trend_base["trend_date"] = pd.to_datetime(trend_base["created_at_dt"], errors="coerce")
+        trend_base = trend_base[trend_base["trend_date"].notna()]
 
-        st.dataframe(
-            monthly,
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "Merchant Share": st.column_config.NumberColumn("Merchant Share", format="%.1f%%"),
-                "Merchant MoM Growth": st.column_config.NumberColumn("Merchant MoM Growth", format="%.1f%%"),
-            },
-        )
+        if trend_base.empty:
+            st.caption("Trend unavailable because no valid dates remain after filtering.")
+        elif trend_granularity == "Daily":
+            trend_base["period"] = trend_base["trend_date"].dt.date.astype(str)
+            daily = (
+                trend_base.pivot_table(
+                    index="period",
+                    columns=intent_metric_col,
+                    values="created_at",
+                    aggfunc="count",
+                    fill_value=0,
+                )
+                .reset_index()
+                .rename_axis(None, axis=1)
+            )
+            for col in ["Prospective Merchant Query", "Customer Query", "Spam Query"]:
+                if col not in daily.columns:
+                    daily[col] = 0
+            daily = daily.sort_values("period")
+            daily["Total Included"] = daily.drop(columns=["period"], errors="ignore").sum(axis=1)
+            daily["Merchant Share"] = daily.apply(
+                lambda r: pct(r["Prospective Merchant Query"], r["Total Included"]), axis=1
+            )
+            daily = daily[
+                [
+                    "period",
+                    "Prospective Merchant Query",
+                    "Customer Query",
+                    "Spam Query",
+                    "Total Included",
+                    "Merchant Share",
+                ]
+            ].rename(columns={"period": "Date"})
+
+            merchant_fig = go.Figure()
+            merchant_fig.add_trace(
+                go.Scatter(
+                    x=daily["Date"].astype(str),
+                    y=daily["Prospective Merchant Query"],
+                    mode="lines+markers",
+                    name="Prospective merchant queries",
+                    customdata=daily[["Total Included", "Merchant Share"]],
+                    hovertemplate=(
+                        "Date: %{x}<br>"
+                        "Merchant queries: %{y}<br>"
+                        "Total included: %{customdata[0]}<br>"
+                        "Merchant share: %{customdata[1]:.1f}%<extra></extra>"
+                    ),
+                )
+            )
+            merchant_fig.update_layout(
+                title="Prospective merchant query daily trend",
+                xaxis_title="Date",
+                yaxis_title="Prospective merchant queries",
+                height=360,
+                margin=dict(l=10, r=10, t=60, b=10),
+            )
+            st.plotly_chart(merchant_fig, use_container_width=True)
+
+            st.dataframe(
+                daily,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Merchant Share": st.column_config.NumberColumn("Merchant Share", format="%.1f%%"),
+                },
+            )
+        else:
+            trend_base["period"] = trend_base["trend_date"].dt.to_period("M").astype(str)
+            monthly = (
+                trend_base.pivot_table(
+                    index="period",
+                    columns=intent_metric_col,
+                    values="created_at",
+                    aggfunc="count",
+                    fill_value=0,
+                )
+                .reset_index()
+                .rename_axis(None, axis=1)
+            )
+            for col in ["Prospective Merchant Query", "Customer Query", "Spam Query"]:
+                if col not in monthly.columns:
+                    monthly[col] = 0
+            monthly = monthly.sort_values("period")
+            monthly["Total Included"] = monthly.drop(columns=["period"], errors="ignore").sum(axis=1)
+            monthly["Merchant Share"] = monthly.apply(
+                lambda r: pct(r["Prospective Merchant Query"], r["Total Included"]), axis=1
+            )
+            monthly["Merchant MoM Growth"] = monthly["Prospective Merchant Query"].pct_change().fillna(0) * 100
+            monthly = monthly[
+                [
+                    "period",
+                    "Prospective Merchant Query",
+                    "Customer Query",
+                    "Spam Query",
+                    "Total Included",
+                    "Merchant Share",
+                    "Merchant MoM Growth",
+                ]
+            ].rename(columns={"period": "Month"})
+
+            merchant_fig = go.Figure()
+            merchant_fig.add_trace(
+                go.Scatter(
+                    x=monthly["Month"].astype(str),
+                    y=monthly["Prospective Merchant Query"],
+                    mode="lines+markers",
+                    name="Prospective merchant queries",
+                    customdata=monthly[["Merchant MoM Growth", "Merchant Share"]],
+                    hovertemplate=(
+                        "Month: %{x}<br>"
+                        "Merchant queries: %{y}<br>"
+                        "MoM growth: %{customdata[0]:.1f}%<br>"
+                        "Merchant share: %{customdata[1]:.1f}%<extra></extra>"
+                    ),
+                )
+            )
+            merchant_fig.update_layout(
+                title="Prospective merchant query MoM trend",
+                xaxis_title="Month",
+                yaxis_title="Prospective merchant queries",
+                height=360,
+                margin=dict(l=10, r=10, t=60, b=10),
+            )
+            st.plotly_chart(merchant_fig, use_container_width=True)
+
+            st.dataframe(
+                monthly,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Merchant Share": st.column_config.NumberColumn("Merchant Share", format="%.1f%%"),
+                    "Merchant MoM Growth": st.column_config.NumberColumn("Merchant MoM Growth", format="%.1f%%"),
+                },
+            )
 
     detail_cols = [
         "created_at",
@@ -1411,7 +1504,7 @@ def render_historical_inbound_dashboard():
     summary, intent_table, monthly = build_historical_inbound_summary()
 
     metric_lookup = dict(zip(summary["Metric"], summary["Value"]))
-    metric_cols = st.columns(4)
+    metric_cols = st.columns(5)
     metric_cols[0].metric("Included submissions", f"{metric_lookup['Included submissions']:,}")
     metric_cols[1].metric("Prospective merchant queries", f"{metric_lookup['Prospective merchant queries']:,}")
     metric_cols[2].metric("Customer queries", f"{metric_lookup['Customer queries']:,}")
